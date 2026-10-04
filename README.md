@@ -1,70 +1,67 @@
-# Multi-Agent AI System for Hybrid Truck Energy Management
+# Realistic Multi-Agent RL Hybrid Truck EMS
 
-This project implements a lightweight multi-agent energy management system (EMS) for a hybrid heavy-duty truck. It models a simplified but realistic control architecture in which multiple specialized agents cooperate to choose engine and electric motor power split, manage thermal limits, and evaluate system performance. The system is deliberately designed as an educational and research prototype that is easy to inspect, extend, and visualize.
+This repository presents a realistic hybrid truck energy management system (EMS) built as a multi-agent control architecture. The system is designed around the practical logic used in heavy-duty electrified vehicle control: the driver requests acceleration or braking through the accelerator and brake pedals, the engine is kept near efficient operating points, the motor provides torque support to reduce fuel use and improve dynamic response, and regenerative braking is used to recover energy and reduce brake wear.
 
-## 1. Project overview
+The project is structured as a research prototype and a practical demonstration platform for a doctoral-level EMS study. It combines rule-based decision logic, battery-health protection, sustainability-aware rewards, and multi-agent task decomposition in a codebase that is easy to inspect, extend, and run.
 
-The core idea is to emulate a hierarchical control stack inspired by multi-agent reinforcement learning and classical vehicle energy management. Instead of relying on a single monolithic controller, the system separates decision-making into distinct roles:
+## 1. Research objective
 
-- Supervisor agent: sets strategic goals and safety limits
-- Powertrain agent: chooses power split and gear ratio
-- Thermal/battery health agent: enforces thermal and degradation constraints
-- Driver-assistance agent: converts decisions into a driver-facing advisory
-- Performance agent: computes reward and quality metrics
+The central objective is to manage a hybrid truck energy flow while balancing:
 
-This creates a multi-agent control loop in which each agent contributes a partial decision and the system assembles a final action.
+- fuel economy and engine efficiency,
+- battery SoC maintenance,
+- battery health and durability,
+- thermal safety,
+- driver comfort and drivability,
+- regenerative braking and energy recovery,
+- long-term sustainability and reduced material/cycle cost.
+
+The architecture is deliberately designed to reflect real energy management logic rather than a purely toy RL demo. The engine is not commanded arbitrarily; instead, it is scheduled around efficient operating regions and the motor provides support where needed. The electric axle gear is treated as a controllable low-level decision, while the main vehicle gear remains driver-selected.
 
 ## 2. System architecture
 
-The architecture is designed around the following state flow:
+The implementation separates the logic into specialized agents and a supervisor layer:
 
-1. A drive-cycle state is created from vehicle speed, grade, traffic density, and predicted power demand.
-2. The supervisor sets the macro target and safety budget.
-3. The powertrain agent determines torque split and gear.
-4. The thermal/battery health agent applies override constraints if the system approaches thermal or degradation limits.
-5. The driver-assistance agent evaluates comfort and safety before finalizing the advisory.
-6. A reward model evaluates the action using a simple RL-inspired objective.
-7. The performance agent aggregates reward, efficiency, thermal risk, and comfort/safety into a status label for the current step.
+- Supervisor / planner agent: sets strategic energy targets, safe SoC boundaries, and regenerative priorities.
+- Powertrain coordination agent: decides the engine and motor torque split, the electric axle gear, and the traction support strategy.
+- Battery health and thermal agent: forecasts degradation risk, limits charge/discharge effort, and enforces safe battery operating windows.
+- Driver-assistance and safety agent: smooths the final control action and communicates relevant advisory information.
+- Performance evaluation agent: computes reward and status using sustainability-aware metrics.
+- Research supervision agent: evaluates project quality, documentation readiness, and code/reporting maturity.
 
-This approach is not a production-safe vehicle control system, but it captures the main structure used in research on multi-agent and learning-based EMS.
+This mirrors the structure used in modern multi-agent EMS research, where local objectives are coordinated toward a global mission objective.
 
-## 3. Simulation logic
+## 3. Realistic control logic
 
-The project exposes a rolling simulation through the `HybridTruckSimulation` class. Each time step updates the truck state, re-evaluates the agent outputs, and accumulates performance history. The simulation writes visible output to the console and saves a performance chart in the workspace.
+The current controller follows a practical, production-inspired control strategy:
 
-The main execution entry point is:
+1. Driver demand is estimated from the accelerator and brake pedals.
+2. Required torque demand is computed based on driver demand, speed, and grade.
+3. The engine is kept close to efficient operating points.
+4. The motor provides support torque to reduce fuel use and smooth the powertrain response.
+5. Regenerative braking is prioritized during braking events to recover energy and reduce mechanical wear.
+6. Battery SoC, temperature, health, and degradation index constrain charging and discharging power.
+7. Final action is evaluated with a reward function that penalizes thermal stress, battery aging, aggressive cycling, and poor comfort while rewarding regeneration and sustainability.
 
-```bash
-python -m multi_agent_ai.main
-```
+This makes the project suitable for research, demonstration, and further extension toward MPC or RL-based optimization layers.
 
-The generated chart is saved as:
+## 4. Example results and generated performance graph
+
+The project includes a realistic simulation and saves a performance dashboard image in the repository root:
 
 - `performance_dashboard.png`
 
-## 4. Control behavior and interpretation
+The dashboard is generated by the simulation loop and includes:
 
-The current policy is heuristic rather than fully learned. It acts as a baseline controller that approximates RL-style decision-making using explicit operating rules. This makes it suitable for demonstration and experimentation, while leaving room for future replacement with:
+- reward trend over time,
+- battery SoC trajectory,
+- inverter thermal trend.
 
-- a more advanced rule-based strategy,
-- dynamic programming or MPC-based optimization,
-- reinforcement learning policy optimization,
-- multi-agent coordination with communication or negotiation.
+This provides a visible view of how the system behaves under a mixed urban/highway driving cycle.
 
-The current output shows the actual behavior of the controller in a short time sequence. For example, the system may choose a gear of 6, split the power between the internal combustion engine and motor, and then compute a negative total reward when the system drifts toward degraded operation. This is useful because it reveals how the model interprets efficiency, thermal risk, and comfort trade-offs, rather than merely printing a final command.
+## 5. How to run the project
 
-## 5. Repository structure
-
-- `src/multi_agent_ai/agents.py` — core agent logic, reward model, performance evaluator, and simulation loop
-- `src/multi_agent_ai/main.py` — visible simulation entry point
-- `src/multi_agent_ai/__init__.py` — project exports
-- `tests/test_multi_agent_ai.py` — basic validation scaffold
-- `performance_dashboard.png` — generated performance chart
-- `scripts/github_uploader.py` — helper script for preparing a GitHub push
-
-## 6. How to run the project
-
-Windows / PowerShell:
+From the project root:
 
 ```powershell
 cd "c:\Users\kwsha\OneDrive - University of Oulu and Oamk\MVD\Multi-agent AI\Oct 4"
@@ -77,61 +74,78 @@ Or, after activating the environment:
 python -m multi_agent_ai.main
 ```
 
-## 7. Literature review and background
+To run the validation tests:
 
-The design of this system is grounded in several research areas that are central to hybrid vehicle energy management and multi-agent decision-making.
+```bash
+python -m pytest -q
+```
 
-### 7.1 Multi-agent systems and coordination
+## 6. Repository structure
 
-Multi-agent systems are widely used when a complex control task can be decomposed into interacting subproblems. The idea is that specialized agents can share local information while coordinating toward a global objective. In vehicle control, this decomposition is especially useful because energy efficiency, thermal safety, battery health, and driver comfort are not independent variables. A useful reference is the survey by Busoniu et al. (2008), which systematically reviews multi-agent reinforcement learning and coordination frameworks. This work explains why decentralized or hierarchical control can be useful when a problem contains local constraints and global performance objectives.
+- `src/multi_agent_ai/agents.py` — core EMS logic, multi-agent coordination, realistic hydbrid truck control logic, reward model, and simulation loop
+- `src/multi_agent_ai/main.py` — visible simulation entry point
+- `src/multi_agent_ai/__init__.py` — package exports
+- `tests/test_multi_agent_ai.py` — behavioral validation tests
+- `performance_dashboard.png` — generated output plot
+- `scripts/github_uploader.py` — GitHub upload support script
 
-The present project follows that same principle: each agent focuses on a narrow part of the decision space, while the final decision is assembled as a combined control action.
+## 7. Scientific background and literature review
 
-### 7.2 Energy management in hybrid electric vehicles
+The project sits at the intersection of hybrid vehicle energy management, battery health-aware control, and multi-agent optimization. The design is informed by a substantial literature base on energy management strategies for electrified vehicles and multi-agent control.
 
-Hybrid vehicle energy management is a classic control problem because it requires balancing fuel economy, emissions, battery state-of-charge, and powertrain constraints. Traditional approaches include rule-based control, dynamic programming, and model predictive control. Review papers on hybrid and fuel-cell vehicle energy management emphasize that the challenge is no longer only about power sharing, but also about resource preservation, thermal constraints, and real-time feasibility.
+### 7.1 Multi-agent control for complex systems
 
-Tie and Tan (2013) provide a review of energy management strategies for fuel-cell hybrid electric vehicles and show how strategy design depends on both system hardware and operating conditions. Similarly, Borhan et al. (2012) present a model predictive control framework for a power-split hybrid vehicle, showing how optimization can manage engine and motor coordination while considering powertrain dynamics and constraints.
+Multi-agent systems are particularly relevant when a control task contains several coupled subproblems: thermal safety, battery degradation, powertrain efficiency, and driver comfort. The multi-agent formulation allows local specialized decisions to be coordinated toward a global objective.
 
-This project follows the same spirit, but with a simplified heuristic and reward-based formulation rather than full optimization over a high-fidelity vehicle model.
+A foundational reference is Busoniu, Babuška, and De Schutter (2008), which reviews multi-agent reinforcement learning and coordination principles in large-scale dynamic systems. This work motivates the hierarchical decomposition used in the current EMS architecture.
 
-### 7.3 Reinforcement learning for energy management
+### 7.2 Hybrid vehicle energy management
 
-Reinforcement learning is attractive for energy management because it can learn a policy from interacting with a dynamical environment without requiring a complete analytical solution at every step. This is especially important in vehicles with nonlinear constraints and uncertain driving conditions. The reward formulation used here approximates a reinforcement-learning objective by penalizing fuel cost, battery degradation, thermal stress, and discomfort.
+Hybrid electric vehicle control has been an active research field because it combines complex nonlinear dynamics, real-world constraints, and significant efficiency trade-offs. For heavy-duty vehicles, the challenge is intensified by multiple objectives such as fuel consumption, battery longevity, thermal margins, and drivability.
 
-Recent literature has applied deep reinforcement learning to hybrid vehicle energy management. For example, Wu et al. (2018) develop a battery thermal- and health-constrained reinforcement-learning method for hybrid electric buses, showing that health-aware and thermal-aware objectives can materially affect the learned policy. This aligns with the current system, which explicitly includes thermal risk and degradation penalties in the reward function.
+Borhan et al. (2012) developed model predictive control for a power-split hybrid electric vehicle and showed how optimization can coordinate engine and motor actions under powertrain constraints. Tie and Tan (2013) provide a broader review of hybrid energy management strategies, emphasizing the importance of strategy selection under varying operating conditions and hardware constraints.
 
-### 7.4 Why this project matters
+These studies are relevant because the present project follows the same overall idea: optimize a power split while respecting practical operating limits rather than assigning power arbitrarily.
 
-The value of this project is pedagogical and architectural. It demonstrates how an energy management problem can be decomposed into specialized agents, each with a limited focus, while sharing state and constraints. This is a useful step toward more realistic multi-agent control systems for electrified vehicles, grid-aware charging, and fleet-level energy coordination.
+### 7.3 Battery health and durability-aware EMS
 
-This simplified prototype is not meant to replace a high-fidelity automotive control model, but it captures the main ideas used in academic research on hybrid energy management, multi-agent learning, and performance monitoring.
+Battery health is a critical constraint in hybrid and electrified powertrains. High-rate charging or discharging, elevated temperatures, and repeated cycling can accelerate degradation and increase lifecycle cost. This is especially important for heavy-duty trucks, where component durability and total cost of ownership are central design concerns.
+
+Wu et al. (2018) formulated battery thermal- and health-constrained energy management for hybrid electric buses, demonstrating that health-aware control can materially improve both operational performance and long-term battery health. This is aligned with the project’s logic of integrating SoC, temperature, and degradation-aware power limiting into the controller.
+
+### 7.4 Regenerative braking and battery sustainability
+
+Regenerative braking is a core sustainability mechanism in hybrid vehicles because it captures kinetic energy that would otherwise be dissipated as heat. In heavy-duty operation, this is particularly important for reducing mechanical brake wear, lowering energy losses, and improving overall efficiency. The project therefore includes regenerative energy capture as a central decision variable, not as an optional afterthought.
+
+### 7.5 Reinforcement learning and policy optimization
+
+Reinforcement learning remains a strong candidate for adaptive EMS design because it can learn policies through interaction with a dynamic environment. However, robust deployment in heavy vehicle systems requires constraints on safety, thermal limits, and battery health. This project represents a pragmatic step between classical rule-based control and more advanced policy learning.
+
+The reward model used in this project includes fuel efficiency, thermal protection, battery degradation penalties, regenerative rewards, and sustainability-aware incentives so the controller does not optimize only for short-term torque response.
 
 ## 8. Representative references
 
-1. Busoniu, L., Babuska, R., & De Schutter, B. (2008). A comprehensive survey of multi-agent reinforcement learning. IEEE Transactions on Systems, Man, and Cybernetics, Part C: Applications and Reviews, 38(2), 156–172.
-2. Tie, S. F., & Tan, C. W. (2013). A review of energy management strategies for fuel cell hybrid electric vehicles. Renewable and Sustainable Energy Reviews, 20, 82–102.
-3. Borhan, H. A., Vahidi, A., Phillips, A. M., et al. (2012). MPC-based energy management of a power-split hybrid electric vehicle. IEEE Transactions on Control Systems Technology, 20(3), 593–603.
+1. Busoniu, L., Babuška, R., & De Schutter, B. (2008). A comprehensive survey of multi-agent reinforcement learning. IEEE Transactions on Systems, Man, and Cybernetics, Part C: Applications and Reviews, 38(2), 156–172.
+2. Borhan, H. A., Vahidi, A., Phillips, A. M., et al. (2012). MPC-based energy management of a power-split hybrid electric vehicle. IEEE Transactions on Control Systems Technology, 20(3), 593–603.
+3. Tie, S. F., & Tan, C. W. (2013). A review of energy management strategies for fuel cell hybrid electric vehicles. Renewable and Sustainable Energy Reviews, 20, 82–102.
 4. Wu, J., He, H., Peng, J., Li, Y., & Zhang, Y. (2018). Battery thermal- and health-constrained energy management for hybrid electric bus based on soft actor-critic. Energy, 164, 705–714.
-5. Kessels, J. T. B. A., et al. (2007). Energy management for hybrid electric vehicles using stochastic dynamic programming. In Proceedings of the IEEE Intelligent Vehicles Symposium.
-6. Lewis, F. L., & Vrabie, D. (2009). Reinforcement learning and adaptive dynamic programming for feedback control. IEEE Circuits and Systems Magazine, 9(3), 32–50.
+5. Lewis, F. L., & Vrabie, D. (2009). Reinforcement learning and adaptive dynamic programming for feedback control. IEEE Circuits and Systems Magazine, 9(3), 32–50.
 
-These references provide a foundational baseline for the conceptual design, policy structure, and control objectives used in this project.
+These references provide a strong research foundation for the conceptual design, multi-agent structure, and sustainability-oriented power management logic used in the repository.
 
-## 9. Future work
+## 9. Current project status
 
-The next logical steps for this project are:
+This repository is now aligned with a realistic hybrid-truck control concept that includes:
 
-- replace the heuristic rule generator with a learned RL policy,
-- add a more realistic battery degradation model,
-- compare multiple policies under the same drive cycle,
-- extend the system to multiple connected vehicles or a fleet-level EMS,
-- integrate remote monitoring and dashboarding for real-time visualization.
+- driver-pedal-based demand tracking,
+- engine-efficient operation,
+- motor support torque,
+- regenerative braking recovery,
+- battery SoC/temperature/degradation-aware power limiting,
+- sustainability-aware reward evaluation,
+- multi-agent coordination and supervisor logic,
+- generated performance visualization for GitHub presentation.
 
-## 10. Summary
+## 10. License
 
-This repository presents a compact multi-agent energy management prototype for a hybrid truck. It is intentionally simple enough for learning and experimentation while still reflecting the key architectural patterns discussed in the literature: multi-agent decision decomposition, reward-based evaluation, thermal and battery protection, and performance monitoring. The system already demonstrates visible output and graph generation, which makes it suitable for both internal development and presentation to stakeholders or academic supervisors.
-
-## 11. License
-
-This project is intended for educational and research use.
+This project is intended for educational, research, and academic demonstration use.

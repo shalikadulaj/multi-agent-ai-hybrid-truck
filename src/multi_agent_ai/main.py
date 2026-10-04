@@ -4,19 +4,22 @@ from .agents import HybridTruckSimulation, performance_visualization_agent
 
 
 def main() -> None:
-    sim = HybridTruckSimulation(steps=3)
+    sim = HybridTruckSimulation(steps=40)
     history = sim.run()
 
-    print("\n=== Multi-Agent EMS Demo ===")
-    for step in history:
+    print("\n=== Realistic Multi-Agent Hybrid Truck EMS ===")
+    for step in history[:10]:
         perf = step["agent_outputs"]["performance"]
         final_decision = step.get("final_decision")
         if final_decision is None:
             continue
         print(
             f"Step {step['timestamp']}: "
-            f"gear={final_decision['selected_gear']}, "
-            f"split={final_decision['torque_split']}, "
+            f"driver_pedal={final_decision['driver_pedal']:.2f}, "
+            f"engine={final_decision['engine_torque_nm']:.0f}Nm, "
+            f"motor={final_decision['motor_torque_nm']:.0f}Nm, "
+            f"regen={final_decision['regen_kw']:.1f}kW, "
+            f"battery={step['battery_state']['soc_pct']:.1f}%, "
             f"reward={perf['total_reward']:.3f}, "
             f"status={perf['status']}"
         )

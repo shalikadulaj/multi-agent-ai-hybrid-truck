@@ -1,14 +1,18 @@
 """Hybrid heavy-vehicle multi-agent energy management package."""
 
 from .agents import (
+    BatteryHealthAgent,
+    DriverPedalModel,
     EnergyManagementPolicy,
     GlobalState,
     HeuristicPolicy,
     HybridTruckSimulation,
     MultiAgentSystem,
     PerformanceMetrics,
+    ProjectSupervisorAgent,
     RewardModel,
     RewardSignal,
+    build_realistic_drive_cycle,
     build_sample_state,
     driver_assistance_agent,
     performance_agent,
@@ -19,14 +23,18 @@ from .agents import (
 )
 
 __all__ = [
+    "BatteryHealthAgent",
+    "DriverPedalModel",
     "EnergyManagementPolicy",
     "GlobalState",
     "HeuristicPolicy",
     "HybridTruckSimulation",
     "MultiAgentSystem",
     "PerformanceMetrics",
+    "ProjectSupervisorAgent",
     "RewardModel",
     "RewardSignal",
+    "build_realistic_drive_cycle",
     "build_sample_state",
     "driver_assistance_agent",
     "performance_agent",
