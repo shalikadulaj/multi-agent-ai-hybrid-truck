@@ -101,6 +101,8 @@ python -m pytest -q
 
 For MATLAB, see [docs/MATLAB_SIMULATION.md](docs/MATLAB_SIMULATION.md). The MATLAB script calls the Python reference simulation, exports a CSV rollout, and plots it; it is not a Simulink plant or hardware-in-the-loop run.
 
+To run it through VS Code Copilot, configure the local MathWorks MCP connection as described in that guide and select the workspace agent [MATLAB Simulation Engineer](.github/agents/matlab-simulation.agent.md). MATLAB R2024b execution of the rollout was verified on the development PC; MATLAB runs remain software simulations, not vehicle tests.
+
 ## 6. Repository structure
 
 - `src/multi_agent_ai/agents.py` — EMS logic, benchmark suite, reward model, and multi-agent orchestration
@@ -112,6 +114,7 @@ For MATLAB, see [docs/MATLAB_SIMULATION.md](docs/MATLAB_SIMULATION.md). The MATL
 - `benchmark_dashboard.png` — multi-policy benchmark comparison
 - `artifacts/` — trained Q table, metadata, held-out results, learning plot, and rollout records
 - `matlab/run_trained_ems.m` — MATLAB launcher and plotter for a Python rollout
+- `.github/agents/matlab-simulation.agent.md` — Copilot role for unattended, bounded MATLAB simulation tasks
 - `docs/MATLAB_SIMULATION.md` — setup, training, MATLAB, and model-scope instructions
 - `scripts/github_uploader.py` — repository upload helper
 

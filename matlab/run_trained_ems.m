@@ -3,22 +3,27 @@ function run_trained_ems()
 % This invokes the repository's Python plant model; it is not Simulink HIL.
 
 repoRoot = fileparts(fileparts(mfilename('fullpath')));
-pythonCandidates = {fullfile(repoRoot, '.venv', 'Scripts', 'python.exe'), ...
-                    fullfile(repoRoot, 'venv', 'Scripts', 'python.exe')};
+pythonCandidates = {fullfile(repoRoot, 'venv', 'Scripts', 'python.exe'), ...
+                    fullfile(repoRoot, '.venv', 'Scripts', 'python.exe')};
 pythonExe = '';
 for candidateIndex = 1:numel(pythonCandidates)
     if isfile(pythonCandidates{candidateIndex})
-        pythonExe = pythonCandidates{candidateIndex};
-        break;
+        checkCommand = sprintf('"%s" -c "import multi_agent_ai.rl_training" >NUL 2>&1', ...
+            pythonCandidates{candidateIndex});
+        if system(checkCommand) == 0
+            pythonExe = pythonCandidates{candidateIndex};
+            break;
+        end
     end
 end
 if isempty(pythonExe)
-    error(['Python executable not found in .venv or venv. Edit pythonExe in this script ' ...
-           'to point to the Python environment where this project is installed.']);
+    error(['No project-ready Python found in venv or .venv. Install the project with ' ...
+           'python -m pip install -e . in the intended environment, or edit this script.']);
 end
 
 modelPath = fullfile(repoRoot, 'artifacts', 'q_policy.csv');
 trajectoryPath = fullfile(repoRoot, 'artifacts', 'matlab_trajectory.csv');
+plotPath = fullfile(repoRoot, 'artifacts', 'matlab_trajectory.png');
 if ~isfile(modelPath)
     error('Trained Q table not found: %s. Run the training command in docs/MATLAB_SIMULATION.md first.', modelPath);
 end
@@ -58,4 +63,7 @@ grid on;
 nexttile;
 plot(T.time_s, T.cumulative_fuel_l, 'LineWidth', 1.3);
 xlabel('Time (s)'); ylabel('Fuel (L, cumulative)'); grid on;
+
+exportgraphics(layout, plotPath, 'Resolution', 180);
+fprintf('MATLAB plot saved to: %s\n', plotPath);
 end
