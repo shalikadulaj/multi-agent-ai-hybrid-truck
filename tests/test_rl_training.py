@@ -29,6 +29,9 @@ def test_cycle_generation_is_reproducible_and_scenario_specific():
     assert first == second
     assert len(first) == 24
     assert max(point.grade_pct for point in first) > 3.0
+    speed_deltas = [second.speed_kph - first.speed_kph for first, second in zip(first, first[1:])]
+    assert max(speed_deltas) <= PlantConfig().maximum_cycle_acceleration_m_s2 * 3.6 + 1e-9
+    assert min(speed_deltas) >= -PlantConfig().maximum_cycle_deceleration_m_s2 * 3.6 - 1e-9
 
 
 def test_transition_enforces_battery_operating_window():
@@ -37,6 +40,7 @@ def test_transition_enforces_battery_operating_window():
     transition(state, point, action=7, config=PlantConfig())
     assert 10.0 <= state.soc_pct <= 95.0
     assert state.battery_temp_c < 40.0
+    assert state.speed_kph >= 0.0
 
 
 def test_transition_accounts_for_battery_energy_in_reward():
@@ -47,6 +51,13 @@ def test_transition_accounts_for_battery_energy_in_reward():
     assert reward < -100.0 * metrics["fuel_l"]
 
 
+def test_transition_does_not_reset_randomized_initial_soh():
+    point = make_drive_cycle("highway_cruise", np.random.default_rng(9), steps=2)[0]
+    state = EpisodeState(soc_pct=60.0, battery_temp_c=25.0, soh_pct=88.0, degradation_proxy=0.0)
+    transition(state, point, action=0, config=PlantConfig())
+    assert state.soh_pct <= 88.0
+
+
 def test_electric_gear_selection_changes_motor_energy_use():
     point = make_drive_cycle("highway_cruise", np.random.default_rng(88), steps=1)[0]
     low_gear_state = EpisodeState(soc_pct=60.0, battery_temp_c=25.0, soh_pct=96.0, degradation_proxy=0.0)
@@ -55,6 +66,41 @@ def test_electric_gear_selection_changes_motor_energy_use():
     _, high_gear = transition(high_gear_state, point, action=5, config=PlantConfig())
     assert low_gear["electric_gear"] != high_gear["electric_gear"]
     assert low_gear_state.soc_pct != high_gear_state.soc_pct
+    assert low_gear["electric_path_efficiency"] != high_gear["electric_path_efficiency"]
+
+
+def test_p4_longitudinal_dynamics_integrate_speed_and_separate_axles():
+    cycle = make_drive_cycle("highway_cruise", np.random.default_rng(72), steps=8)
+    state = EpisodeState(
+        soc_pct=60.0,
+        battery_temp_c=25.0,
+        soh_pct=96.0,
+        degradation_proxy=0.0,
+        speed_kph=cycle[0].speed_kph,
+    )
+    _, metrics = transition(state, cycle[1], action=4, config=PlantConfig())
+    assert metrics["road_load_force_n"] > 0.0
+    assert metrics["engine_axle_force_n"] > 0.0
+    assert metrics["electric_axle_force_n"] > 0.0
+    assert metrics["engine_axle_force_n"] != metrics["electric_axle_force_n"]
+    assert state.speed_kph == metrics["speed_kph"]
+    assert state.distance_km > 0.0
+
+
+def test_regeneration_reduces_friction_brake_work_and_charges_battery():
+    cycle = make_drive_cycle("city_stop_go", np.random.default_rng(73), steps=30)
+    point = next(item for item in cycle if item.brake_pedal > 0.0)
+    no_regen_state = EpisodeState(
+        soc_pct=60.0, battery_temp_c=25.0, soh_pct=96.0, degradation_proxy=0.0, speed_kph=point.speed_kph
+    )
+    regen_state = EpisodeState(
+        soc_pct=60.0, battery_temp_c=25.0, soh_pct=96.0, degradation_proxy=0.0, speed_kph=point.speed_kph
+    )
+    _, no_regen = transition(no_regen_state, point, action=0, config=PlantConfig())
+    _, with_regen = transition(regen_state, point, action=6, config=PlantConfig())
+    assert with_regen["regen_power_kw"] > no_regen["regen_power_kw"]
+    assert with_regen["friction_brake_kwh"] < no_regen["friction_brake_kwh"]
+    assert regen_state.soc_pct > no_regen_state.soc_pct
 
 
 def test_q_learning_trains_and_policy_roundtrips(tmp_path: Path):
@@ -77,4 +123,4 @@ def test_evaluation_reports_charge_sustaining_metrics():
     assert "charge_sustaining_equivalent_l_per_100km" in metrics
     summary = evaluate_policies(policy, seeds=(1,), steps=20)
     assert len(summary) == 4 * 3
-    assert {row["policy"] for row in summary} == {"no_assist", "rule_based", "trained_q_learning"}
+    assert {row["policy"] for row in summary} == {"engine_only_regen", "rule_based", "trained_q_learning"}

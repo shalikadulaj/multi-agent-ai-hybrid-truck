@@ -1,6 +1,6 @@
 # Run the trained EMS from MATLAB
 
-This workflow assumes **MATLAB**. It runs the trained Q-learning policy and the low-order truck plant in Python, writes a timestamped CSV rollout, then imports and visualizes the results in MATLAB. It is useful for algorithm review and MATLAB plotting; it is **not** a Simulink vehicle plant, HIL integration, or hardware validation. “Mtalba” is interpreted as MATLAB here; if it means another program, these MATLAB-specific steps will not apply.
+This workflow assumes **MATLAB**. It runs the trained Q-learning policy and the assumed two-axle P4 longitudinal plant in Python, writes a rollout CSV, then imports and plots the results in MATLAB. It is useful for algorithm review; it is **not** a Simulink plant, HIL integration, or hardware validation. Parameter assumptions and missing vehicle physics are listed in [P4_VEHICLE_MODEL.md](P4_VEHICLE_MODEL.md).
 
 ## Connect VS Code Copilot to MATLAB
 
@@ -46,7 +46,7 @@ Open MATLAB, set its current folder to the repository root, and run:
 run('matlab/run_trained_ems.m')
 ```
 
-The script calls the repository's `.venv` Python executable, evaluates a saved policy on a reproducible mixed-route cycle, exports `artifacts/matlab_trajectory.csv`, and plots speed, engine/motor/regen power, battery SoC and temperature, and cumulative fuel use.
+The script selects a project-ready Python environment, evaluates the saved policy on a reproducible mixed-route cycle, exports `artifacts/matlab_trajectory.csv`, and plots requested versus simulated speed, separate engine/electric axle wheel powers, regenerative/friction braking, battery SoC and temperature, and fuel use.
 
 Verified on this workstation with MATLAB R2024b (24.2.0.2712019): `run('matlab/run_trained_ems.m')` completed through MATLAB batch mode, generated the CSV and `artifacts/matlab_trajectory.png`, and `checkcode('matlab/run_trained_ems.m')` returned no diagnostics. The launcher probes `venv` and `.venv` and uses the first one that can import the project module.
 

@@ -24,11 +24,11 @@ This layered logic keeps the controller readable while preserving a realistic mu
 
 ## 3. Trained RL prototype
 
-The repository includes reproducible tabular Q-learning in `src/multi_agent_ai/rl_training.py`. This is distinct from `DeepRLEMSPolicy`, which remains a legacy hand-coded heuristic and is **not** a learned model. The learned Q table selects bounded supervisory motor-assist/regen and electric-axle gear actions; the driver-selected truck gear is not an EMS action.
+The repository includes reproducible tabular Q-learning in `src/multi_agent_ai/rl_training.py`. This is distinct from `DeepRLEMSPolicy`, which remains a legacy hand-coded heuristic and is **not** a learned model. The learned Q table selects bounded motor-assist/regen and electric-axle gear actions; the driver-selected truck gear is not an EMS action.
 
-Training randomizes initial SoC, battery temperature, ambient conditions, and four duty-cycle families (city stop-go, mixed route, highway cruise, and hilly grade). The reward charges fuel use, battery-energy change on a diesel-equivalent basis, battery throughput, thermal stress, and unmet traction demand, avoiding battery depletion as a free apparent fuel saving. Held-out evaluation uses fixed seeds distinct from training and includes a transparent rule controller and no-assist comparator.
+The plant now represents the requested **two-axle P4 arrangement**: an engine supplies one driven axle, and an independent electric axle provides assistance and regenerative braking. It integrates vehicle speed from longitudinal force balance, including mass/inertia, rolling resistance, aerodynamic drag, and road grade. Engine-axle and e-axle forces are calculated separately; braking blends regen with friction braking under battery charge limits.
 
-The bundled plant is an explicit low-order research simulation with nominal parameters, not a calibrated Sisu digital twin. Fuel numbers are simulator estimates, not measurements from a truck. See [the model and validation caveats](docs/MATLAB_SIMULATION.md#scope-and-safety).
+Training randomizes initial SoC, battery temperature, ambient conditions, and four duty-cycle families. The revised reward accounts for charge-sustaining fuel-equivalent energy, battery throughput/degradation proxy, thermal stress, friction-brake work, speed tracking, and unmet traction demand. Held-out evaluation uses fixed seeds distinct from training and includes a rule controller and an engine-only-with-regen comparator. **All new vehicle parameters are assumed, not verified Sisu specifications**; the model is not a calibrated Sisu digital twin. See the full [P4 vehicle model, assumptions, reward, and limitations](docs/P4_VEHICLE_MODEL.md).
 
 ### Train and reproduce
 
@@ -38,11 +38,13 @@ python -m pytest -q
 python -m multi_agent_ai.rl_training --episodes 1000 --seed 2026
 ```
 
+The package entry point runs the same P4 training workflow: `python -m multi_agent_ai.main --episodes 1000 --seed 2026`.
+
 The run saves the portable model, metadata, training history, per-episode benchmark results, summary, and plot under `artifacts/`. Use `python -m multi_agent_ai.rl_training --evaluate-only` to re-evaluate the saved Q table without training.
 
 ## 4. Benchmarking and public performance view
 
-The benchmark suite compares trained Q-learning, a transparent rule baseline, and engine-only/no-assist operation on representative truck missions:
+The benchmark suite compares trained Q-learning, a transparent rule baseline, and engine-only propulsion with regenerative braking on representative truck missions:
 
 - city stop-and-go driving,
 - mixed urban/highway operation,
@@ -53,28 +55,32 @@ Evaluation uses ten fixed held-out seeds per duty-cycle family. The summary repo
 
 ### Current reproducible run
 
-The checked-in artifact set was generated with tabular Q-learning, 1,000 episodes, seed 2026, 120 steps per training episode, and ten held-out seeds per scenario. The table shows mean charge-sustaining equivalent diesel consumption; values are model outputs, not vehicle-test data.
+The checked-in artifact set was regenerated for the P4 model with tabular Q-learning, 1,000 episodes, seed 2026, 120 steps per episode, and ten held-out seeds per scenario. The table shows charge-sustaining equivalent diesel consumption and the learned policy's target-speed tracking error; values are model outputs, not vehicle-test data.
 
-| Scenario | No assist (L/100 km) | Rule baseline (L/100 km) | Trained Q-learning (L/100 km) |
-|---|---:|---:|---:|
-| City stop-go | 65.66 | 68.82 | 73.54 |
-| Mixed route | 83.81 | 77.12 | 76.10 |
-| Highway cruise | 36.11 | 37.58 | 38.96 |
-| Hilly grade | 61.71 | 62.72 | 62.88 |
+| Scenario | Engine-only + regen (L/100 km) | Rule baseline (L/100 km) | Trained Q-learning (L/100 km) | Q speed error (km/h) |
+|---|---:|---:|---:|---:|
+| City stop-go | 55.87 | 53.46 | 70.40 | 11.85 |
+| Mixed route | 90.41 | 85.24 | 86.78 | 6.58 |
+| Highway cruise | 65.82 | 58.55 | 56.01 | 0.92 |
+| Hilly grade | 187.58 | 184.22 | 180.73 | 5.79 |
 
-On this fixed-seed run, Q-learning did **not** outperform the rule baseline consistently. Treat this as an early learning baseline and a useful negative/diagnostic result, not evidence of an efficiency gain. Re-run the documented command after any model or training-code changes; regenerated CSVs are the authoritative results.
+In this run, Q-learning had lower charge-sustaining equivalent use than the rule baseline on highway and hilly routes, but higher use on city and mixed routes. Some routes also retain notable speed-tracking error. These are early controller-learning results in the assumed plant—not evidence of Sisu truck performance or a consistent RL gain. Raw diesel reduction alone is not sufficient: inspect SoC change, distance, and speed error in `artifacts/evaluation_summary.csv` and `artifacts/evaluation_episodes.csv`. Regenerated CSVs are authoritative after model/training changes.
 
 ### Visual outputs
 
 The repository includes the following plots:
 
-- `performance_dashboard.png` for the time-series trajectory of reward, SoC, and inverter temperature.
+- `performance_dashboard.png` for the P4 mixed-route target/simulated speed and separate axle/braking trajectory.
 - `benchmark_dashboard.png` for the current trained-Q held-out comparison across benchmark scenarios.
 - `artifacts/rl_training_results.png` for the Q-learning learning curve and held-out charge-sustaining benchmark.
+- `artifacts/p4_vehicle_trajectory.png` for target versus integrated speed and separate engine/electric axle, regenerative, and friction-brake wheel powers.
+- `artifacts/p4_mixed_route_trace.csv` for the time history behind the P4 vehicle plot.
 - `artifacts/evaluation_summary.csv` and `artifacts/evaluation_episodes.csv` for aggregate and per-rollout metrics.
 - `artifacts/q_policy.csv` and `artifacts/q_policy_metadata.json` for the trained policy and training/model metadata.
 
 ![Q-learning training curve and held-out charge-sustaining benchmark](artifacts/rl_training_results.png)
+
+![Assumed P4 two-axle model trajectory](artifacts/p4_vehicle_trajectory.png)
 
 These images show the system’s operational behavior in a format suitable for GitHub presentation and project reporting.
 
@@ -84,13 +90,13 @@ From the repository root:
 
 ```powershell
 cd "c:\Users\kwsha\OneDrive - University of Oulu and Oamk\MVD\Multi-agent AI\Oct 4"
-.\venv\Scripts\python -m multi_agent_ai.main
+.\venv\Scripts\python -m multi_agent_ai.main --episodes 1000 --seed 2026
 ```
 
 Or, with the environment active:
 
 ```bash
-python -m multi_agent_ai.main
+python -m multi_agent_ai.main --episodes 1000 --seed 2026
 ```
 
 To run the validation tests:
@@ -107,7 +113,8 @@ To run it through VS Code Copilot, configure the local MathWorks MCP connection 
 
 - `src/multi_agent_ai/agents.py` — EMS logic, benchmark suite, reward model, and multi-agent orchestration
 - `src/multi_agent_ai/rl_training.py` — randomized drive-cycle plant, Q-learning, model export, and evaluation
-- `src/multi_agent_ai/main.py` — simulation and benchmark runner
+- `docs/P4_VEHICLE_MODEL.md` — P4 topology, force equations, parameter assumptions, reward, and calibration gaps
+- `src/multi_agent_ai/main.py` — P4 RL training and benchmark command-line entry point
 - `src/multi_agent_ai/__init__.py` — public package exports
 - `tests/test_multi_agent_ai.py` — validation tests
 - `performance_dashboard.png` — time-series result plot

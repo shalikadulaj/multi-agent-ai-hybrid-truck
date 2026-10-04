@@ -1,6 +1,6 @@
 function run_trained_ems()
-% Run the saved Python Q-learning EMS and plot its rollout in MATLAB.
-% This invokes the repository's Python plant model; it is not Simulink HIL.
+% Run the saved Python Q-learning EMS on the assumed two-axle P4 plant.
+% This invokes the repository's Python model; it is not Simulink HIL.
 
 repoRoot = fileparts(fileparts(mfilename('fullpath')));
 pythonCandidates = {fullfile(repoRoot, 'venv', 'Scripts', 'python.exe'), ...
@@ -44,14 +44,16 @@ layout = tiledlayout(4, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
 title(layout, 'Q-learning EMS — Python plant rollout viewed in MATLAB');
 
 nexttile;
+plot(T.time_s, T.target_speed_kph, '--', 'LineWidth', 1.1); hold on;
 plot(T.time_s, T.speed_kph, 'LineWidth', 1.3);
-ylabel('Speed (km/h)'); grid on;
+ylabel('Speed (km/h)'); legend('Target', 'Simulated', 'Location', 'eastoutside'); grid on;
 
 nexttile;
-plot(T.time_s, T.engine_power_kw, 'LineWidth', 1.2); hold on;
+plot(T.time_s, T.engine_wheel_power_kw, 'LineWidth', 1.2); hold on;
 plot(T.time_s, T.motor_power_kw, 'LineWidth', 1.2);
-plot(T.time_s, T.regen_power_kw, 'LineWidth', 1.2);
-ylabel('Power (kW)'); legend('Engine', 'Motor', 'Regen', 'Location', 'eastoutside'); grid on;
+plot(T.time_s, -T.regen_wheel_power_kw, 'LineWidth', 1.2);
+plot(T.time_s, -T.friction_brake_power_kw, 'LineWidth', 1.2);
+ylabel('Wheel power (kW)'); legend('Engine axle', 'Electric axle', 'Regen', 'Friction brakes', 'Location', 'eastoutside'); grid on;
 
 nexttile;
 yyaxis left;
