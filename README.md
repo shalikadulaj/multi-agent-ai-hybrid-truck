@@ -1,6 +1,6 @@
 # Efficient and Sustainable Multi-Agent EMS for a Heavy-Duty Hybrid Truck
 
-This project studies a multi-agent energy management strategy for a heavy-duty hybrid truck. The design is inspired by the electrification work associated with the University of Oulu and a Sisu-class heavy-vehicle context, with the goal of managing engine and motor power so that the truck remains efficient, safe, and durable across realistic operating conditions.
+This project studies a multi-agent energy management strategy for a heavy-duty hybrid truck. The design is inspired by the electrification work associated with a heavy-vehicle context, with the goal of managing engine and motor power so that the truck remains efficient, safe, and durable across realistic operating conditions.
 
 The system is organized around a layered control architecture in which a supervisory planner interprets the mission, the powertrain policy manages engine and motor torque split, the battery-health controller constrains charge and discharge, and the performance layer evaluates energy use, thermal stress, regenerative recovery, and long-term sustainability. The workflow is intentionally modular so it can be extended toward stronger RL or MPC-based optimization without sacrificing transparency or explainability.
 
