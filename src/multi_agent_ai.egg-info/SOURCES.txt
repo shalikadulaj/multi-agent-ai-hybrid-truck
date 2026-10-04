@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/multi_agent_ai/__init__.py
+src/multi_agent_ai/agents.py
+src/multi_agent_ai/main.py
+src/multi_agent_ai.egg-info/PKG-INFO
+src/multi_agent_ai.egg-info/SOURCES.txt
+src/multi_agent_ai.egg-info/dependency_links.txt
+src/multi_agent_ai.egg-info/top_level.txt
+tests/test_multi_agent_ai.py

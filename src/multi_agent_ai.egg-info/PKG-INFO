@@ -1,0 +1,28 @@
+Metadata-Version: 2.4
+Name: multi-agent-ai
+Version: 0.1.0
+Summary: Starter project for a multi-agent AI workflow
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+
+# Multi-Agent AI Starter
+
+This workspace contains a minimal Python project for building a multi-agent AI workflow.
+
+## Structure
+
+- `src/multi_agent_ai/agents.py` — base agent and workflow logic
+- `src/multi_agent_ai/main.py` — example entry point
+- `tests/test_multi_agent_ai.py` — starter tests
+
+## Run
+
+```bash
+python -m multi_agent_ai.main
+```
+
+## Test
+
+```bash
+python -m pytest -q
+```
