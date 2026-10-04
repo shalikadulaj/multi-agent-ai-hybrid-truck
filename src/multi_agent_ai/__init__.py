@@ -2,6 +2,7 @@
 
 from .agents import (
     BatteryHealthAgent,
+    DeepRLEMSPolicy,
     DriverPedalModel,
     EnergyManagementPolicy,
     GlobalState,
@@ -12,8 +13,11 @@ from .agents import (
     ProjectSupervisorAgent,
     RewardModel,
     RewardSignal,
+    benchmark_visualization_agent,
+    build_benchmark_scenarios,
     build_realistic_drive_cycle,
     build_sample_state,
+    compare_policies,
     driver_assistance_agent,
     performance_agent,
     performance_visualization_agent,
@@ -24,6 +28,7 @@ from .agents import (
 
 __all__ = [
     "BatteryHealthAgent",
+    "DeepRLEMSPolicy",
     "DriverPedalModel",
     "EnergyManagementPolicy",
     "GlobalState",
@@ -34,8 +39,11 @@ __all__ = [
     "ProjectSupervisorAgent",
     "RewardModel",
     "RewardSignal",
+    "benchmark_visualization_agent",
+    "build_benchmark_scenarios",
     "build_realistic_drive_cycle",
     "build_sample_state",
+    "compare_policies",
     "driver_assistance_agent",
     "performance_agent",
     "performance_visualization_agent",

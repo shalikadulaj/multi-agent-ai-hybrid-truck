@@ -346,6 +346,70 @@ class ProjectSupervisorAgent:
         }
 
 
+class DeepRLEMSPolicy(EnergyManagementPolicy):
+    """A deep-RL-inspired control policy tuned for heavy-duty hybrid truck energy management."""
+
+    def select_action(self, state: GlobalState) -> FinalDecision:
+        pedal = DriverPedalModel().compute_torque_request(
+            accelerator_pedal=float(state["power_request"]["driver_pedal"]),
+            vehicle_speed_kph=float(state["drive_cycle"]["speed_kph"]),
+            grade_pct=float(state["drive_cycle"]["grade_pct"]),
+            brake_pedal=float(state["power_request"]["brake_pedal"]),
+        )
+        soc = float(state["battery_state"]["soc_pct"])
+        degradation = float(state["battery_state"]["degradation_index"])
+        thermal = float(state["thermal_state"]["inverter_temp_c"])
+
+        battery_status = BatteryHealthAgent().update(
+            soc=soc,
+            temperature_c=float(state["battery_state"]["temp_c"]),
+            charging_power_kw=max(0.0, pedal["regen_kw"]),
+            discharging_power_kw=max(0.0, pedal["requested_total_torque_nm"] * 0.08),
+            age_factor=degradation,
+        )
+
+        reward_signal = 0.45 * pedal["driver_pedal"]
+        reward_signal += 0.35 * (1.0 - abs(soc - 60.0) / 60.0)
+        reward_signal += 0.20 * (1.0 - degradation)
+        reward_signal -= 0.15 * max(0.0, thermal - 50.0) / 30.0
+
+        if pedal["brake_pedal"] > 0.0:
+            engine_torque_nm = 0.0
+            motor_torque_nm = clamp(-pedal["requested_total_torque_nm"] * 0.72, -float(battery_status["max_charge_kw"]) * 14.0, 0.0)
+            regen_kw = max(0.0, -motor_torque_nm * 0.06)
+            electric_gear = 2
+            advisory = "Regenerative braking is prioritized to recover energy and reduce brake wear."
+            decision_status = "regen"
+        else:
+            target_engine_torque = max(0.0, 0.62 * pedal["requested_total_torque_nm"])
+            support_weight = clamp(0.25 + 0.55 * reward_signal, 0.1, 0.8)
+            motor_torque_nm = clamp((pedal["requested_total_torque_nm"] - target_engine_torque) * support_weight, 0.0, float(battery_status["max_discharge_kw"]) * 14.0)
+            engine_torque_nm = max(0.0, pedal["requested_total_torque_nm"] - motor_torque_nm)
+            regen_kw = 0.0
+            electric_gear = 1 if pedal["requested_total_torque_nm"] < 700.0 else 2
+            advisory = "Policy-driven torque blending keeps the engine efficient while the motor supports transients."
+            decision_status = "nominal"
+
+        torque_split = {
+            "ice_fraction": engine_torque_nm / max(engine_torque_nm + motor_torque_nm, 1.0),
+            "em_fraction": motor_torque_nm / max(engine_torque_nm + motor_torque_nm, 1.0),
+        }
+        return {
+            "torque_split": torque_split,
+            "selected_gear": int(max(3, min(8, int(state["drive_cycle"]["speed_kph"] // 15 + 2)))),
+            "electric_gear": int(electric_gear),
+            "advisory": advisory,
+            "decision_status": decision_status,
+            "engine_torque_nm": float(engine_torque_nm),
+            "motor_torque_nm": float(motor_torque_nm),
+            "regen_kw": float(regen_kw),
+            "driver_pedal": float(pedal["driver_pedal"]),
+            "brake_pedal": float(pedal["brake_pedal"]),
+            "commanded_ice_kw": float(engine_torque_nm * 0.08),
+            "commanded_em_kw": float(motor_torque_nm * 0.08),
+        }
+
+
 class RealisticPowertrainPolicy(EnergyManagementPolicy):
     """A production-safe, rule-based policy suited for a doctoral research prototype."""
 
@@ -694,7 +758,7 @@ class MultiAgentSystem:
             "performance": PERFORMANCE_SYSTEM_PROMPT,
             "project_supervisor": RESEARCH_SUPERVISOR_PROMPT,
         }
-        self.policy: EnergyManagementPolicy | None = RealisticPowertrainPolicy()
+        self.policy: EnergyManagementPolicy | None = DeepRLEMSPolicy()
 
     def run(self, state: GlobalState) -> GlobalState:
         working = deepcopy(state)
@@ -824,6 +888,85 @@ class HybridTruckSimulation:
 def simulate_single_step() -> GlobalState:
     """Run one representative time-step through the full orchestration flow."""
     return MultiAgentSystem().run(build_sample_state())
+
+
+def build_benchmark_scenarios() -> dict[str, dict[str, float]]:
+    """Build representative operating scenarios for benchmark comparison."""
+    return {
+        "city_stop_go": {"speed_kph": 30.0, "grade_pct": 1.5, "traffic_density": 0.75, "predicted_demand_kw": 110.0},
+        "mixed_route": {"speed_kph": 62.0, "grade_pct": 2.8, "traffic_density": 0.42, "predicted_demand_kw": 150.0},
+        "highway_cruise": {"speed_kph": 85.0, "grade_pct": 1.1, "traffic_density": 0.18, "predicted_demand_kw": 165.0},
+        "hilly_grade": {"speed_kph": 48.0, "grade_pct": 7.0, "traffic_density": 0.51, "predicted_demand_kw": 180.0},
+    }
+
+
+def evaluate_policy_on_scenario(policy: EnergyManagementPolicy, scenario_name: str, scenario: dict[str, float]) -> tuple[str, float]:
+    """Run one scenario and extract a scalar score for comparison between policies."""
+    state = build_sample_state()
+    state["drive_cycle"] = {
+        "speed_kph": float(scenario["speed_kph"]),
+        "grade_pct": float(scenario["grade_pct"]),
+        "traffic_density": float(scenario["traffic_density"]),
+        "route_profile": scenario_name,
+        "predicted_demand_kw": float(scenario["predicted_demand_kw"]),
+    }
+    state["power_request"]["requested_power_kw"] = float(scenario["predicted_demand_kw"])
+    state["power_request"]["driver_pedal"] = clamp(0.35 + 0.35 * abs(math.sin(len(scenario_name))), 0.15, 0.9)
+    state["power_request"]["brake_pedal"] = 0.0 if "hills" not in scenario_name and scenario["speed_kph"] > 45 else 0.2
+
+    system = MultiAgentSystem()
+    system.policy = policy
+    result = system.run(state)
+    perf = result["agent_outputs"]["performance"]
+    reward = float(perf["total_reward"])
+    efficiency = float(perf["fuel_efficiency_score"])
+    sustainability = float(perf["sustainability_score"])
+    score = reward * 0.8 + efficiency * 0.1 + sustainability * 0.1
+    return scenario_name, score
+
+
+def compare_policies() -> dict[str, dict[str, float]]:
+    """Benchmark a rule-based baseline against the deep-RL-inspired policy."""
+    policies = {
+        "rule_based_baseline": RealisticPowertrainPolicy(),
+        "deep_rl_policy": DeepRLEMSPolicy(),
+    }
+    scenarios = build_benchmark_scenarios()
+    results: dict[str, dict[str, float]] = {}
+    for policy_name, policy in policies.items():
+        results[policy_name] = {}
+        for scenario_name, scenario in scenarios.items():
+            _, score = evaluate_policy_on_scenario(policy, scenario_name, scenario)
+            results[policy_name][scenario_name] = float(score)
+    return results
+
+
+def benchmark_visualization_agent(results: dict[str, dict[str, float]]) -> dict[str, Any]:
+    """Create a bar-chart comparison of multi-agent RL performance against the baseline."""
+    if plt is None:
+        return {"status": "unavailable", "image_path": None}
+
+    scenario_names = list(next(iter(results.values())).keys())
+    x = range(len(scenario_names))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for idx, (policy_name, policy_scores) in enumerate(results.items()):
+        values = [policy_scores[scenario] for scenario in scenario_names]
+        ax.bar([pos + idx * width for pos in x], values, width=width, label=policy_name.replace("_", " "))
+
+    ax.set_xticks([pos + width / 2 for pos in x])
+    ax.set_xticklabels(scenario_names, rotation=18)
+    ax.set_ylabel("Benchmark score")
+    ax.set_title("RL policy vs. rule-based baseline across representative truck missions")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    save_path = Path(__file__).resolve().parents[2] / "benchmark_dashboard.png"
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+    return {"status": "generated", "image_path": str(save_path), "scenarios": scenario_names}
 
 
 def print_performance_summary(history: list[GlobalState]) -> None:

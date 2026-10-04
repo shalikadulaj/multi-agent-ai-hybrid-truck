@@ -2,11 +2,14 @@ import math
 
 from multi_agent_ai.agents import (
     BatteryHealthAgent,
+    DeepRLEMSPolicy,
     DriverPedalModel,
     MultiAgentSystem,
     ProjectSupervisorAgent,
+    build_benchmark_scenarios,
     build_realistic_drive_cycle,
     build_sample_state,
+    compare_policies,
 )
 
 
@@ -61,3 +64,15 @@ def test_multi_agent_system_runs_with_realistic_template_state():
     assert "final_decision" in result
     assert "agent_outputs" in result
     assert result["agent_outputs"]["performance"]["status"] in {"efficient", "stable", "degraded"}
+
+
+def test_deep_rl_policy_and_benchmark_are_available():
+    policy = DeepRLEMSPolicy()
+    decision = policy.select_action(build_sample_state())
+    assert decision["commanded_em_kw"] >= 0
+    assert decision["commanded_ice_kw"] >= 0
+    scenarios = build_benchmark_scenarios()
+    assert len(scenarios) >= 3
+    benchmark = compare_policies()
+    assert "deep_rl_policy" in benchmark
+    assert "rule_based_baseline" in benchmark

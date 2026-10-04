@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from .agents import HybridTruckSimulation, performance_visualization_agent
+from .agents import (
+    HybridTruckSimulation,
+    benchmark_visualization_agent,
+    compare_policies,
+    performance_visualization_agent,
+)
 
 
 def main() -> None:
@@ -33,9 +38,19 @@ def main() -> None:
 
     plot_result = performance_visualization_agent(history)
     if plot_result["status"] == "generated":
-        print(f"\nGraph saved to: {plot_result['image_path']}")
+        print(f"\nTrajectory graph saved to: {plot_result['image_path']}")
     else:
-        print("\nGraph not generated because matplotlib is not installed.")
+        print("\nTrajectory graph not generated because matplotlib is not installed.")
+
+    benchmark_result = compare_policies()
+    benchmark_plot = benchmark_visualization_agent(benchmark_result)
+    if benchmark_plot["status"] == "generated":
+        print(f"Benchmark graph saved to: {benchmark_plot['image_path']}")
+    else:
+        print("Benchmark graph not generated because matplotlib is not installed.")
+    print("\nBenchmark summary:")
+    for policy_name, scores in benchmark_result.items():
+        print(policy_name, scores)
 
 
 if __name__ == "__main__":
