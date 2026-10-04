@@ -1,0 +1,77 @@
+{
+  "algorithm": "tabular Q-learning (epsilon-greedy)",
+  "episodes": 1000,
+  "seed": 2026,
+  "steps_per_episode": 120,
+  "observation_bins": [
+    [
+      40.0,
+      65.0
+    ],
+    [
+      65.0,
+      120.0,
+      175.0
+    ],
+    [
+      45.0,
+      70.0
+    ],
+    [
+      1.0,
+      5.0
+    ],
+    [
+      30.0
+    ],
+    [
+      0.5
+    ]
+  ],
+  "observation_shape": [
+    3,
+    4,
+    3,
+    3,
+    2,
+    2
+  ],
+  "action_count": 8,
+  "propulsion_actions": {
+    "assist_fraction": [
+      0.0,
+      0.2,
+      0.4,
+      0.6
+    ],
+    "electric_gear": [
+      1,
+      2
+    ]
+  },
+  "braking_actions": {
+    "regen_fraction": [
+      0.0,
+      0.33,
+      0.67,
+      1.0
+    ],
+    "electric_gear": [
+      1,
+      2
+    ]
+  },
+  "plant_config": {
+    "timestep_s": 1.0,
+    "battery_capacity_kwh": 120.0,
+    "motor_max_power_kw": 120.0,
+    "engine_max_power_kw": 300.0,
+    "max_regen_power_kw": 110.0,
+    "ambient_temp_c": 20.0,
+    "initial_soc_pct": 60.0,
+    "initial_soh_pct": 96.0,
+    "reference_engine_efficiency": 0.38,
+    "diesel_energy_kwh_per_l": 9.7
+  },
+  "model_scope": "transparent low-order simulation; not calibrated to a specific Sisu truck or validated for real-time vehicle control"
+}

@@ -5,10 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "multi-agent-ai"
 version = "0.1.0"
-description = "Starter project for a multi-agent AI workflow"
+description = "Research prototype for Q-learning hybrid heavy-truck energy management"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+	"numpy>=1.26",
+	"matplotlib>=3.8",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

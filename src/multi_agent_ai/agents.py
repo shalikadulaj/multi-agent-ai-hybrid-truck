@@ -347,7 +347,11 @@ class ProjectSupervisorAgent:
 
 
 class DeepRLEMSPolicy(EnergyManagementPolicy):
-    """A deep-RL-inspired control policy tuned for heavy-duty hybrid truck energy management."""
+    """Legacy hand-coded heuristic; this policy is not a trained RL model.
+
+    Use :class:`multi_agent_ai.rl_training.TabularQPolicy` with its saved Q table
+    for a policy learned from simulation episodes.
+    """
 
     def select_action(self, state: GlobalState) -> FinalDecision:
         pedal = DriverPedalModel().compute_torque_request(
