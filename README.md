@@ -89,7 +89,7 @@ These images show the system’s operational behavior in a format suitable for G
 From the repository root:
 
 ```powershell
-cd "c:\Users\kwsha\OneDrive - University of Oulu and Oamk\MVD\Multi-agent AI\Oct 4"
+cd "c:\Users\xxxx\xxxxxx\xx\xxx\Oct 4"
 .\venv\Scripts\python -m multi_agent_ai.main --episodes 1000 --seed 2026
 ```
 
