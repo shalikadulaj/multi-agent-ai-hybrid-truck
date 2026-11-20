@@ -33,7 +33,10 @@ def test_cycle_generation_is_reproducible_and_scenario_specific():
     assert first == second
     assert len(first) == 24
     assert max(point.grade_pct for point in first) > 3.0
-    speed_deltas = [second.speed_kph - first.speed_kph for first, second in zip(first, first[1:])]
+    speed_deltas = [
+        current.speed_kph - previous.speed_kph
+        for previous, current in zip(second, second[1:])
+    ]
     assert max(speed_deltas) <= PlantConfig().maximum_cycle_acceleration_m_s2 * 3.6 + 1e-9
     assert min(speed_deltas) >= -PlantConfig().maximum_cycle_deceleration_m_s2 * 3.6 - 1e-9
 
