@@ -1,4 +1,4 @@
-"""Reproducible tabular Q-learning EMS experiments for the hybrid-truck prototype.
+"""Reproducible health-aware EMS experiments for the hybrid-truck prototype.
 
 The environment is a transparent, low-order longitudinal/powertrain model. It is
 suitable for PC experiments and controller development, not vehicle certification.
@@ -23,6 +23,7 @@ from .agents import build_realistic_drive_cycle
 
 OBSERVATION_BINS: tuple[tuple[float, ...], ...] = (
     (40.0, 65.0),  # SoC
+    (85.0, 92.0, 97.0, 99.0),  # SoH; expose battery aging state to RL
     (65.0, 120.0, 175.0),  # traction/braking power request
     (45.0, 70.0),  # speed
     (1.0, 5.0),  # road grade
@@ -35,7 +36,10 @@ N_ACTIONS = 8
 ASSIST_FRACTIONS = (0.0, 0.20, 0.40, 0.60)
 REGEN_FRACTIONS = (0.0, 0.33, 0.67, 1.0)
 SCENARIOS = ("city_stop_go", "mixed_route", "highway_cruise", "hilly_grade")
-EVALUATION_POLICIES = ("engine_only_regen", "rule_based", "trained_q_learning")
+EVALUATION_POLICIES = (
+    "engine_only_regen", "rule_based", "trained_q_learning",
+    "health_aware_mpc", "health_priority_mpc",
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,8 @@ class PlantConfig:
     vehicle_mass_kg: float = 32_000.0
     rotating_mass_factor: float = 1.05
     wheel_radius_m: float = 0.50
+    engine_axle_position: str = "front (assumed)"
+    electric_axle_position: str = "rear (user-specified)"
     rolling_resistance_coefficient: float = 0.007
     drag_coefficient: float = 0.62
     frontal_area_m2: float = 9.0
@@ -68,6 +74,14 @@ class PlantConfig:
     maximum_cycle_deceleration_m_s2: float = 0.60
     speed_tracking_gain_per_s: float = 0.45
     low_speed_cutoff_m_s: float = 0.25
+    # Illustrative cycle-fade coefficient only; replace with supplier/cell data.
+    assumed_soh_loss_pct_per_efc: float = 0.01
+    assumed_reference_c_rate: float = 0.5
+    # Calendar-fade coefficient is an explicit prototype assumption. It must be
+    # identified from cell/pack aging data before it is used for life prediction.
+    assumed_calendar_soh_loss_pct_per_day: float = 0.005
+    # Explicit shadow price; sensitivity analysis is required for publication.
+    soh_fade_reward_weight: float = 25_000.0
 
 
 @dataclass
@@ -80,8 +94,12 @@ class EpisodeState:
     fuel_l: float = 0.0
     electric_discharge_kwh: float = 0.0
     recovered_energy_kwh: float = 0.0
+    battery_throughput_kwh: float = 0.0
     distance_km: float = 0.0
     cumulative_reward: float = 0.0
+    peak_battery_temp_c: float = 0.0
+    time_above_35_c_s: float = 0.0
+    calendar_aging_proxy: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -95,8 +113,29 @@ class DrivePoint:
     target_acceleration_m_s2: float = 0.0
 
 
+def copy_episode_state(state: EpisodeState) -> EpisodeState:
+    """Copy mutable plant state for isolated MPC rollout branches."""
+    return EpisodeState(
+        soc_pct=state.soc_pct,
+        battery_temp_c=state.battery_temp_c,
+        soh_pct=state.soh_pct,
+        degradation_proxy=state.degradation_proxy,
+        speed_kph=state.speed_kph,
+        fuel_l=state.fuel_l,
+        electric_discharge_kwh=state.electric_discharge_kwh,
+        recovered_energy_kwh=state.recovered_energy_kwh,
+        battery_throughput_kwh=state.battery_throughput_kwh,
+        distance_km=state.distance_km,
+        cumulative_reward=state.cumulative_reward,
+        peak_battery_temp_c=state.peak_battery_temp_c,
+        time_above_35_c_s=state.time_above_35_c_s,
+        calendar_aging_proxy=state.calendar_aging_proxy,
+    )
+
+
 def encode_observation(
     soc_pct: float,
+    soh_pct: float,
     power_request_kw: float,
     speed_kph: float,
     grade_pct: float,
@@ -104,7 +143,7 @@ def encode_observation(
     braking: bool,
 ) -> int:
     """Discretize the measured state into a reproducible Q-table index."""
-    values = (soc_pct, power_request_kw, speed_kph, grade_pct, battery_temp_c, float(braking))
+    values = (soc_pct, soh_pct, power_request_kw, speed_kph, grade_pct, battery_temp_c, float(braking))
     bins = tuple(int(np.digitize(value, edges)) for value, edges in zip(values, OBSERVATION_BINS))
     return int(np.ravel_multi_index(bins, OBSERVATION_SHAPE))
 
@@ -116,6 +155,7 @@ def _observation_power(point: DrivePoint) -> float:
 def _encode_point(state: EpisodeState, point: DrivePoint) -> int:
     return encode_observation(
         state.soc_pct,
+        state.soh_pct,
         _observation_power(point),
         state.speed_kph,
         point.grade_pct,
@@ -253,7 +293,13 @@ def battery_power_limits(state: EpisodeState, config: PlantConfig) -> tuple[floa
     )
 
 
-def transition(state: EpisodeState, point: DrivePoint, action: int, config: PlantConfig) -> tuple[float, dict[str, float]]:
+def transition(
+    state: EpisodeState,
+    point: DrivePoint,
+    action: int,
+    config: PlantConfig,
+    health_cost_multiplier: float = 1.0,
+) -> tuple[float, dict[str, float]]:
     """Advance P4 longitudinal dynamics with distinct engine and electric axles."""
     if not 0 <= action < N_ACTIONS:
         raise ValueError(f"Action must be in [0, {N_ACTIONS - 1}], got {action}.")
@@ -334,19 +380,40 @@ def transition(state: EpisodeState, point: DrivePoint, action: int, config: Plan
         battery_loss_kw = max(0.0, motor_battery_kw - motor_wheel_kw)
     dt_h = dt_s / 3600.0
     state.battery_temp_c += dt_h * (0.025 * battery_loss_kw - 0.012 * (state.battery_temp_c - point.ambient_temp_c))
-    stress = 1.0 + max(0.0, 35.0 - state.soc_pct) / 30.0 + max(0.0, state.battery_temp_c - 30.0) / 20.0
-    degradation_increment = battery_energy_kwh * stress * 1.0e-5
-    state.degradation_proxy += degradation_increment
-    state.soh_pct = max(70.0, state.soh_pct - degradation_increment * 100.0)
+    state.peak_battery_temp_c = max(state.peak_battery_temp_c, state.battery_temp_c)
+    if state.battery_temp_c > 35.0:
+        state.time_above_35_c_s += dt_s
+    c_rate = (battery_energy_kwh * 3600.0 / dt_s) / config.battery_capacity_kwh if dt_s > 0.0 else 0.0
+    soc_stress = 1.0 + max(0.0, 35.0 - state.soc_pct) / 30.0 + max(0.0, state.soc_pct - 70.0) / 20.0
+    temperature_stress = 2.0 ** (max(0.0, state.battery_temp_c - 25.0) / 10.0)
+    rate_stress = 1.0 + max(0.0, c_rate - config.assumed_reference_c_rate)
+    stress = soc_stress * temperature_stress * rate_stress
+    state.battery_throughput_kwh += battery_energy_kwh
+    degradation_increment = (battery_energy_kwh / (2.0 * config.battery_capacity_kwh)) * config.assumed_soh_loss_pct_per_efc * stress
+    # A separate calendar term prevents the model from treating an idle,
+    # high-temperature battery as aging-free. Both terms are proxies, not a
+    # chemistry model or a remaining-useful-life estimate.
+    soc_calendar_stress = 1.0 + max(0.0, state.soc_pct - 60.0) / 40.0
+    calendar_increment = (
+        config.assumed_calendar_soh_loss_pct_per_day
+        * dt_s / 86_400.0
+        * 2.0 ** (max(0.0, state.battery_temp_c - 25.0) / 10.0)
+        * soc_calendar_stress
+    )
+    total_degradation_increment = degradation_increment + calendar_increment
+    state.degradation_proxy += total_degradation_increment
+    state.calendar_aging_proxy += calendar_increment
+    state.soh_pct = max(70.0, state.soh_pct - total_degradation_increment)
     state.soc_pct = float(np.clip(state.soc_pct, 10.0, 95.0))
 
     battery_delta_kwh = (previous_soc - state.soc_pct) / 100.0 * config.battery_capacity_kwh
     battery_equivalent_l = battery_delta_kwh / (config.reference_engine_efficiency * config.diesel_energy_kwh_per_l)
     cycle_cost = 2.0 * battery_energy_kwh * stress
+    fade_cost = config.soh_fade_reward_weight * health_cost_multiplier * total_degradation_increment
     friction_brake_kwh = friction_force * mean_speed * dt_s / 3.6e6
     tracking_cost = 0.03 * abs(point.speed_kph - state.speed_kph)
     unmet_power_kw = unmet_force * mean_speed / 1000.0
-    reward = -(100.0 * (fuel_l + battery_equivalent_l) + cycle_cost + 1.5 * friction_brake_kwh
+    reward = -(100.0 * (fuel_l + battery_equivalent_l) + cycle_cost + fade_cost + 1.5 * friction_brake_kwh
               + 0.02 * max(0.0, state.battery_temp_c - 38.0) ** 2 + tracking_cost + 0.05 * unmet_power_kw)
     engine_wheel_kw = engine_force * mean_speed / 1000.0
     regen_wheel_kw = regen_force * mean_speed / 1000.0
@@ -363,6 +430,13 @@ def transition(state: EpisodeState, point: DrivePoint, action: int, config: Plan
         "battery_equivalent_fuel_l": battery_equivalent_l,
         "battery_throughput_kwh": battery_energy_kwh, "electric_gear": float(electric_gear),
         "electric_path_efficiency": electric_path_efficiency,
+        "soh_loss_percentage_points": total_degradation_increment,
+        "calendar_soh_loss_percentage_points": calendar_increment,
+        "cycle_soh_loss_percentage_points": degradation_increment,
+        "equivalent_full_cycles_increment": battery_energy_kwh / (2.0 * config.battery_capacity_kwh),
+        "cycle_aging_stress_factor": stress,
+        "cycle_fade_reward_cost": fade_cost,
+        "battery_temperature_c": state.battery_temp_c,
         "reward": reward,
     }
     state.cumulative_reward += reward
@@ -399,6 +473,84 @@ class TabularQPolicy:
         np.savetxt(path, table, delimiter=",", header=header, comments="", fmt=["%d"] + ["%.7g"] * N_ACTIONS)
 
 
+class HealthAwareMPCPolicy:
+    """Short-horizon beam-search MPC using the same P4 plant and health reward.
+
+    The finite action set is searched over a short preview of the known drive
+    cycle. Only the first action is applied; optimization is repeated next step.
+    """
+
+    def __init__(
+        self,
+        horizon_steps: int = 5,
+        beam_width: int = 8,
+        discount: float = 0.98,
+        health_cost_multiplier: float = 1.0,
+        terminal_soc_weight: float = 2.0,
+        terminal_temperature_weight: float = 2.0,
+    ) -> None:
+        if (
+            horizon_steps < 1
+            or beam_width < 1
+            or health_cost_multiplier < 0.0
+            or terminal_soc_weight < 0.0
+            or terminal_temperature_weight < 0.0
+        ):
+            raise ValueError("MPC horizon/beam must be positive and cost weights nonnegative")
+        self.horizon_steps = horizon_steps
+        self.beam_width = beam_width
+        self.discount = discount
+        self.health_cost_multiplier = health_cost_multiplier
+        self.terminal_soc_weight = terminal_soc_weight
+        self.terminal_temperature_weight = terminal_temperature_weight
+
+    def select_action(
+        self,
+        state: EpisodeState,
+        cycle: list[DrivePoint],
+        index: int,
+        config: PlantConfig,
+    ) -> int:
+        """Return the first action of the highest-return health-aware rollout."""
+        beam: list[tuple[float, EpisodeState, int]] = [(0.0, copy_episode_state(state), 0)]
+        horizon = min(self.horizon_steps, len(cycle) - index)
+        for depth in range(horizon):
+            point: DrivePoint = cycle[index + depth]
+            expanded: list[tuple[float, EpisodeState, int]] = []
+            for accumulated_return, predicted_state, first_action in beam:
+                for action_index in range(N_ACTIONS):
+                    action: int = int(action_index)
+                    candidate_state = copy_episode_state(predicted_state)
+                    step_reward, _ = transition(
+                        candidate_state, point, action, config,
+                        health_cost_multiplier=self.health_cost_multiplier,
+                    )
+                    chosen_first = action if depth == 0 else first_action
+                    expanded.append((
+                        accumulated_return + (self.discount**depth) * step_reward,
+                        candidate_state,
+                        chosen_first,
+                    ))
+            expanded.sort(key=lambda item: item[0], reverse=True)
+            beam = expanded[: self.beam_width]
+
+        if not beam:
+            return 0
+        # A finite horizon otherwise rewards emptying the battery just outside
+        # the preview. The terminal terms make the controller charge-sustaining
+        # and discourage ending a rollout hot, without pretending to know the
+        # complete future mission.
+        def terminal_value(item: tuple[float, EpisodeState, int]) -> float:
+            accumulated_return, predicted_state, _ = item
+            soc_cost = self.terminal_soc_weight * abs(predicted_state.soc_pct - state.soc_pct)
+            temperature_cost = self.terminal_temperature_weight * max(
+                0.0, predicted_state.battery_temp_c - 35.0
+            ) ** 2
+            return accumulated_return - soc_cost - temperature_cost
+
+        return int(max(beam, key=terminal_value)[2])
+
+
 def train_q_learning(
     episodes: int = 10000,
     seed: int = 2026,
@@ -408,12 +560,18 @@ def train_q_learning(
     epsilon_start: float = 1.0,
     epsilon_end: float = 0.04,
 ) -> tuple[TabularQPolicy, list[dict[str, float | int | str]]]:
-    """Train Q-learning with randomized cycles, initial SoC, and ambient conditions."""
+    """Train a Double Q-learning EMS with randomized missions and health states.
+
+    Two independent estimators reduce the optimistic max bias of ordinary
+    Q-learning (van Hasselt et al., 2016). The exported policy is their mean,
+    retaining the existing portable CSV format.
+    """
     if episodes < 1:
         raise ValueError("episodes must be at least 1")
     rng = np.random.default_rng(seed)
     action_rng = random.Random(seed)
-    q_values = np.zeros((N_STATES, N_ACTIONS), dtype=np.float32)
+    q_a = np.zeros((N_STATES, N_ACTIONS), dtype=np.float32)
+    q_b = np.zeros((N_STATES, N_ACTIONS), dtype=np.float32)
     logs: list[dict[str, float | int | str]] = []
     config = PlantConfig()
 
@@ -436,7 +594,7 @@ def train_q_learning(
             if action_rng.random() < epsilon:
                 action = action_rng.randrange(N_ACTIONS)
             else:
-                action = int(np.argmax(q_values[observation]))
+                action = int(np.argmax(q_a[observation] + q_b[observation]))
             reward, _ = transition(state, point, action, config)
             total_reward += reward
             done = step == len(cycle) - 1
@@ -445,12 +603,30 @@ def train_q_learning(
             else:
                 next_point = cycle[step + 1]
                 next_observation = _encode_point(state, next_point)
-                next_max = float(np.max(q_values[next_observation]))
-            q_values[observation, action] += alpha * (reward + gamma * next_max - q_values[observation, action])
+                if action_rng.random() < 0.5:
+                    next_action = int(np.argmax(q_a[next_observation]))
+                    next_max = float(q_b[next_observation, next_action])
+                else:
+                    next_action = int(np.argmax(q_b[next_observation]))
+                    next_max = float(q_a[next_observation, next_action])
+            if action_rng.random() < 0.5:
+                q_a[observation, action] += alpha * (
+                    reward + gamma * next_max - q_a[observation, action]
+                )
+            else:
+                q_b[observation, action] += alpha * (
+                    reward + gamma * next_max - q_b[observation, action]
+                )
 
-        logs.append({"episode": episode + 1, "scenario": scenario, "epsilon": epsilon, "return": total_reward})
+        logs.append({
+            "episode": episode + 1,
+            "scenario": scenario,
+            "epsilon": epsilon,
+            "return": total_reward,
+            "algorithm": "double_q_learning",
+        })
 
-    return TabularQPolicy(q_values), logs
+    return TabularQPolicy((q_a + q_b) / 2.0), logs
 
 
 def _fixed_policy_action(name: str, state: EpisodeState, point: DrivePoint) -> int:
@@ -472,7 +648,7 @@ def _fixed_policy_action(name: str, state: EpisodeState, point: DrivePoint) -> i
 def simulate_episode(
     scenario: str,
     seed: int,
-    policy: TabularQPolicy | str,
+    policy: TabularQPolicy | HealthAwareMPCPolicy | str,
     steps: int = 120,
     initial_soc_pct: float = 60.0,
     capture_trace: bool = False,
@@ -488,12 +664,15 @@ def simulate_episode(
         degradation_proxy=0.0,
         speed_kph=cycle[0].speed_kph,
     )
+    initial_soh_pct = state.soh_pct
     trace: list[dict[str, float]] = []
     speed_tracking_error_sum = 0.0
     friction_brake_energy_kwh = 0.0
     unmet_traction_energy_kwh = 0.0
     for index, point in enumerate(cycle):
-        if isinstance(policy, TabularQPolicy):
+        if isinstance(policy, HealthAwareMPCPolicy):
+            action = policy.select_action(state, cycle, index, config)
+        elif isinstance(policy, TabularQPolicy):
             action = policy.select_action(state, point)
         else:
             action = _fixed_policy_action(policy, state, point)
@@ -520,7 +699,12 @@ def simulate_episode(
                     "road_load_force_n": control["road_load_force_n"],
                     "electric_gear": control["electric_gear"],
                     "soc_pct": state.soc_pct,
+                    "soh_pct": state.soh_pct,
+                    "equivalent_full_cycles": state.battery_throughput_kwh / (2.0 * config.battery_capacity_kwh),
                     "battery_temp_c": state.battery_temp_c,
+                    "peak_battery_temp_c": state.peak_battery_temp_c,
+                    "time_above_35_c_s": state.time_above_35_c_s,
+                    "calendar_aging_proxy": state.calendar_aging_proxy,
                     "cumulative_fuel_l": state.fuel_l,
                     "step_reward": reward,
                 }
@@ -531,9 +715,15 @@ def simulate_episode(
     equivalent_fuel_l = state.fuel_l + (initial_soc_pct - state.soc_pct) / 100.0 * config.battery_capacity_kwh / (
         config.reference_engine_efficiency * config.diesel_energy_kwh_per_l
     )
+    if isinstance(policy, TabularQPolicy):
+        policy_name = "trained_q_learning"
+    elif isinstance(policy, HealthAwareMPCPolicy):
+        policy_name = "health_aware_mpc" if policy.health_cost_multiplier == 1.0 else "health_priority_mpc"
+    else:
+        policy_name = policy
     metrics: dict[str, Any] = {
         "scenario": scenario,
-        "policy": "trained_q_learning" if isinstance(policy, TabularQPolicy) else policy,
+        "policy": policy_name,
         "seed": seed,
         "distance_km": state.distance_km,
         "mean_speed_tracking_error_kph": speed_tracking_error_sum / max(len(cycle), 1),
@@ -547,8 +737,17 @@ def simulate_episode(
         "final_soc_pct": state.soc_pct,
         "soc_change_pct": state.soc_pct - initial_soc_pct,
         "battery_discharge_kwh": state.electric_discharge_kwh,
+        "battery_throughput_kwh": state.battery_throughput_kwh,
+        "equivalent_full_cycles": state.battery_throughput_kwh / (2.0 * config.battery_capacity_kwh),
+        "initial_soh_pct": initial_soh_pct,
+        "final_soh_pct": state.soh_pct,
+        "soh_loss_percentage_points": initial_soh_pct - state.soh_pct,
+        "cycle_aging_proxy": state.degradation_proxy,
         "regen_recovered_kwh": state.recovered_energy_kwh,
         "battery_degradation_proxy": state.degradation_proxy,
+        "calendar_aging_proxy": state.calendar_aging_proxy,
+        "peak_battery_temp_c": state.peak_battery_temp_c,
+        "time_above_35_c_s": state.time_above_35_c_s,
         "final_battery_temp_c": state.battery_temp_c,
         "episode_return": score,
     }
@@ -560,12 +759,16 @@ def evaluate_policies(
     seeds: tuple[int, ...] = tuple(range(4101, 4111)),
     steps: int = 120,
 ) -> list[dict[str, Any]]:
-    """Compare learned control with engine-only/regen and transparent rule baselines."""
+    """Compare Q learning and health-aware MPC to engine-only and rule baselines."""
     rows: list[dict[str, Any]] = []
     for scenario_index, scenario in enumerate(SCENARIOS):
         for seed in seeds:
             eval_seed = seed + scenario_index * 100
-            for candidate in ("engine_only_regen", "rule_based", policy):
+            for candidate in (
+                "engine_only_regen", "rule_based", policy,
+                HealthAwareMPCPolicy(),
+                HealthAwareMPCPolicy(health_cost_multiplier=25.0),
+            ):
                 metrics, _ = simulate_episode(scenario, eval_seed, candidate, steps=steps)
                 rows.append(metrics)
     return rows
@@ -587,7 +790,8 @@ def save_results_plot(training_log: list[dict[str, Any]], evaluation: list[dict[
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    axes = axes.ravel()
     episodes = np.asarray([int(row["episode"]) for row in training_log])
     returns = np.asarray([float(row["return"]) for row in training_log])
     smooth_window = max(1, min(500, len(returns) // 10))
@@ -597,10 +801,10 @@ def save_results_plot(training_log: list[dict[str, Any]], evaluation: list[dict[
     axes[0].grid(alpha=0.25)
 
     policies = EVALUATION_POLICIES
-    colors = ("#8b9aa7", "#e09f3e", "#137c8b")
+    colors = ("#8b9aa7", "#e09f3e", "#137c8b", "#805ad5", "#c05621")
     scenarios = list(SCENARIOS)
     x = np.arange(len(scenarios))
-    width = 0.24
+    width = 0.15
     for offset, (name, color) in enumerate(zip(policies, colors)):
         means = [
             float(np.mean([row["charge_sustaining_equivalent_l_per_100km"] for row in evaluation if row["scenario"] == scenario and row["policy"] == name]))
@@ -610,11 +814,27 @@ def save_results_plot(training_log: list[dict[str, Any]], evaluation: list[dict[
             float(np.std([row["charge_sustaining_equivalent_l_per_100km"] for row in evaluation if row["scenario"] == scenario and row["policy"] == name], ddof=1))
             for scenario in scenarios
         ]
-        axes[1].bar(x + (offset - 1) * width, means, width, yerr=stds, capsize=3, label=name.replace("_", " "), color=color)
-    axes[1].set(title="Held-out charge-sustaining equivalent", xlabel="Drive-cycle family", ylabel="Equivalent diesel (L/100 km)", xticks=x, xticklabels=[s.replace("_", "\n") for s in scenarios])
-    axes[1].legend(frameon=False, fontsize=8)
-    axes[1].grid(axis="y", alpha=0.25)
-    fig.suptitle("Hybrid-truck EMS: tabular Q-learning research simulation", fontsize=13)
+        bar_x = x + (offset - (len(policies) - 1) / 2.0) * width
+        axes[1].bar(bar_x, means, width, yerr=stds, capsize=2, label=name.replace("_", " "), color=color)
+
+        mean_efc = [
+            float(np.mean([row["equivalent_full_cycles"] for row in evaluation if row["scenario"] == scenario and row["policy"] == name]))
+            for scenario in scenarios
+        ]
+        axes[2].bar(bar_x, mean_efc, width, label=name.replace("_", " "), color=color)
+        mean_soh_loss = [
+            float(np.mean([row["soh_loss_percentage_points"] for row in evaluation if row["scenario"] == scenario and row["policy"] == name]))
+            for scenario in scenarios
+        ]
+        axes[3].bar(bar_x, mean_soh_loss, width, label=name.replace("_", " "), color=color)
+
+    axes[1].set(title="Charge-sustaining equivalent", ylabel="Equivalent diesel (L/100 km)", xticks=x, xticklabels=[s.replace("_", "\n") for s in scenarios])
+    axes[2].set(title="Battery throughput", ylabel="Equivalent full cycles per route", xticks=x, xticklabels=[s.replace("_", "\n") for s in scenarios])
+    axes[3].set(title="Cycle-aging proxy", ylabel="SoH loss (percentage points / route)", xticks=x, xticklabels=[s.replace("_", "\n") for s in scenarios])
+    for axis in axes[1:]:
+        axis.legend(frameon=False, fontsize=7)
+        axis.grid(axis="y", alpha=0.25)
+    fig.suptitle("Rear-e-axle P4 EMS: Q-learning vs predictive health-aware control", fontsize=13)
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=170, bbox_inches="tight")
@@ -634,16 +854,16 @@ def save_vehicle_trajectory_plot(policy: TabularQPolicy, path: Path, seed: int =
 
     _, trace = simulate_episode("mixed_route", seed, policy, steps=120, capture_trace=True)
     time_s = np.asarray([row["time_s"] for row in trace])
-    fig, axes = plt.subplots(4, 1, figsize=(11, 10), sharex=True)
+    fig, axes = plt.subplots(5, 1, figsize=(11, 12), sharex=True)
     axes[0].plot(time_s, [row["target_speed_kph"] for row in trace], "--", label="Target speed")
     axes[0].plot(time_s, [row["speed_kph"] for row in trace], label="Simulated vehicle speed")
     axes[0].set_ylabel("Speed (km/h)")
     axes[0].legend(frameon=False)
     axes[0].grid(alpha=0.25)
 
-    axes[1].plot(time_s, [row["engine_wheel_power_kw"] for row in trace], label="Engine axle at wheels")
-    axes[1].plot(time_s, [row["motor_power_kw"] for row in trace], label="Electric axle at wheels")
-    axes[1].plot(time_s, [-row["regen_wheel_power_kw"] for row in trace], label="Electric axle regen at wheels")
+    axes[1].plot(time_s, [row["engine_wheel_power_kw"] for row in trace], label="Front engine axle (assumed)")
+    axes[1].plot(time_s, [row["motor_power_kw"] for row in trace], label="Rear electric axle")
+    axes[1].plot(time_s, [-row["regen_wheel_power_kw"] for row in trace], label="Rear e-axle regen")
     axes[1].plot(time_s, [-row["friction_brake_power_kw"] for row in trace], label="Friction brakes")
     axes[1].set_ylabel("Wheel power (kW)")
     axes[1].legend(frameon=False, ncol=2, fontsize=8)
@@ -655,9 +875,12 @@ def save_vehicle_trajectory_plot(policy: TabularQPolicy, path: Path, seed: int =
 
     axes[3].plot(time_s, [row["soc_pct"] for row in trace], label="Battery SoC")
     axes[3].set_ylabel("SoC (%)")
-    axes[3].set_xlabel("Time (s)")
     axes[3].grid(alpha=0.25)
-    fig.suptitle("Assumed P4 truck model: engine axle + independent electric axle")
+    axes[4].plot(time_s, [row["soh_pct"] for row in trace], label="SoH proxy")
+    axes[4].set_ylabel("SoH proxy (%)")
+    axes[4].set_xlabel("Time (s)")
+    axes[4].grid(alpha=0.25)
+    fig.suptitle("Assumed P4 truck: front engine axle + rear electric axle")
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=170, bbox_inches="tight")
@@ -681,6 +904,12 @@ def summarize_evaluation(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "std_charge_sustaining_equivalent_l_per_100km": float(np.std([row["charge_sustaining_equivalent_l_per_100km"] for row in subset], ddof=1)) if len(subset) > 1 else 0.0,
                     "mean_soc_change_pct": float(np.mean([row["soc_change_pct"] for row in subset])),
                     "mean_regen_kwh": float(np.mean([row["regen_recovered_kwh"] for row in subset])),
+                    "mean_battery_throughput_kwh": float(np.mean([row["battery_throughput_kwh"] for row in subset])),
+                    "mean_equivalent_full_cycles": float(np.mean([row["equivalent_full_cycles"] for row in subset])),
+                    "mean_soh_loss_percentage_points": float(np.mean([row["soh_loss_percentage_points"] for row in subset])),
+                    "mean_calendar_aging_proxy": float(np.mean([row["calendar_aging_proxy"] for row in subset])),
+                    "mean_peak_battery_temp_c": float(np.mean([row["peak_battery_temp_c"] for row in subset])),
+                    "mean_time_above_35_c_s": float(np.mean([row["time_above_35_c_s"] for row in subset])),
                     "mean_tracking_error_kph": float(np.mean([row["mean_speed_tracking_error_kph"] for row in subset])),
                     "mean_friction_brake_energy_kwh": float(np.mean([row["friction_brake_energy_kwh"] for row in subset])),
                     "mean_unmet_traction_energy_kwh": float(np.mean([row["unmet_traction_energy_kwh"] for row in subset])),
@@ -710,7 +939,8 @@ def run_training(
     write_csv(root / "p4_mixed_route_trace.csv", rollout_trace)
     save_vehicle_trajectory_plot(policy, root / "p4_vehicle_trajectory.png", seed=4101)
     metadata = {
-        "algorithm": "tabular Q-learning (epsilon-greedy)",
+        "algorithm": "Double Q-learning (epsilon-greedy; mean of two independent estimators)",
+        "additional_controller": "health-aware receding-horizon beam-search MPC with terminal SoC/temperature costs; 5-step preview, beam width 8; tested on evaluation only, not learned",
         "episodes": episodes,
         "seed": seed,
         "steps_per_episode": steps_per_episode,
@@ -719,9 +949,22 @@ def run_training(
         "action_count": N_ACTIONS,
         "propulsion_actions": {"assist_fraction": ASSIST_FRACTIONS, "electric_gear": [1, 2]},
         "braking_actions": {"regen_fraction": REGEN_FRACTIONS, "electric_gear": [1, 2]},
+        "evaluated_controllers": [
+            "engine-only propulsion plus rear-axle regen",
+            "SOC-threshold rule-based control",
+            "Double Q-learning (SoC, SoH, speed, demand, grade, temperature, braking observations)",
+            "health-aware receding-horizon beam-search MPC (5 steps; beam width 8; terminal SoC/temperature costs; perfect short route preview)",
+            "life-priority beam-search MPC (same horizon/preview; 25x health-fade shadow-price sensitivity case; not calibrated battery economics)",
+        ],
         "plant_config": asdict(PlantConfig()),
-        "architecture": "P4 parallel hybrid: engine drives one axle mechanically; independent electric motor drives a second axle",
-        "reward_objective": "charge-sustaining fuel-equivalent consumption + battery throughput/degradation proxy + friction brake work + thermal violation + speed-tracking and unmet-traction penalties",
+        "architecture": "P4 parallel hybrid: rear axle driven by the independent electric motor; engine drives the other/front axle (front location remains an explicit assumption)",
+        "reward_objective": "charge-sustaining fuel-equivalent consumption + throughput cost + illustrative EFC-based SoH-fade cost with SoC/temperature/C-rate stress + friction brake work + thermal violation + speed-tracking and unmet-traction penalties",
+        "health_proxy": "equivalent full cycles = total charge-plus-discharge energy throughput / (2 * nominal capacity); cycle fade plus an explicit illustrative calendar-fade term with temperature and SoC stress; coefficients are not chemistry-specific and cannot estimate service life",
+        "scientific_basis": [
+            "Wang et al. (2018), Predictive energy management for hybrid electric vehicles considering extension of the battery life, Proc IMechE Part D 232(4), 499-510, doi:10.1177/0954407017703229",
+            "Wu et al. (2021), Battery Thermal- and Health-Constrained Energy Management for Hybrid Electric Bus Based on Soft Actor-Critic DRL Algorithm, IEEE TII 17(6), 3751-3761, doi:10.1109/TII.2020.3014599",
+            "Schmalstieg et al. (2014), A holistic aging model for Li(NiMnCo)O2 based 18650 lithium-ion batteries, Journal of Power Sources 257, 325-334, doi:10.1016/j.jpowsour.2014.02.012",
+        ],
         "model_scope": "longitudinal force model with assumed generic heavy-truck properties; not calibrated to a specific Sisu model or validated for real-time vehicle control",
         "validation_rollout": rollout_metrics,
     }
@@ -730,15 +973,17 @@ def run_training(
 
 
 def _print_summary(rows: list[dict[str, Any]]) -> None:
-    print("Scenario            Policy               Fuel    CS-equiv   SoC Δ (%)   Regen")
-    print("                                         L/100km    L/100km                  kWh")
-    print("-" * 87)
+    print("Scenario       Policy               CS-eq    SoC d   EFC     SoH d   Track err")
+    print("                                   L/100km     (%)          (pp)       (km/h)")
+    print("-" * 84)
     for row in rows:
         print(
-            f"{row['scenario']:<20} {row['policy']:<20} "
-            f"{row['mean_fuel_l_per_100km']:>8.2f} "
-            f"{row['mean_charge_sustaining_equivalent_l_per_100km']:>9.2f} "
-            f"{row['mean_soc_change_pct']:>10.3f} {row['mean_regen_kwh']:>8.4f}"
+            f"{row['scenario']:<14} {row['policy']:<20} "
+            f"{row['mean_charge_sustaining_equivalent_l_per_100km']:>7.2f} "
+            f"{row['mean_soc_change_pct']:>8.3f} "
+            f"{row['mean_equivalent_full_cycles']:>6.4f} "
+            f"{row['mean_soh_loss_percentage_points']:>8.5f} "
+            f"{row['mean_tracking_error_kph']:>9.2f}"
         )
 
 

@@ -1,5 +1,6 @@
 {
   "algorithm": "tabular Q-learning (epsilon-greedy)",
+  "additional_controller": "health-aware receding-horizon beam-search MPC; 5-step preview, beam width 8; tested on evaluation only, not learned",
   "episodes": 1000,
   "seed": 2026,
   "steps_per_episode": 120,
@@ -7,6 +8,12 @@
     [
       40.0,
       65.0
+    ],
+    [
+      85.0,
+      92.0,
+      97.0,
+      99.0
     ],
     [
       65.0,
@@ -30,6 +37,7 @@
   ],
   "observation_shape": [
     3,
+    5,
     4,
     3,
     3,
@@ -61,11 +69,19 @@
       2
     ]
   },
+  "evaluated_controllers": [
+    "engine-only propulsion plus rear-axle regen",
+    "SOC-threshold rule-based control",
+    "tabular Q-learning (SoC, SoH, speed, demand, grade, temperature, braking observations)",
+    "health-aware receding-horizon beam-search MPC (5 steps; beam width 8; same health-fade shadow price as Q learning; perfect short route preview)"
+  ],
   "plant_config": {
     "timestep_s": 1.0,
     "vehicle_mass_kg": 32000.0,
     "rotating_mass_factor": 1.05,
     "wheel_radius_m": 0.5,
+    "engine_axle_position": "front (assumed)",
+    "electric_axle_position": "rear (user-specified)",
     "rolling_resistance_coefficient": 0.007,
     "drag_coefficient": 0.62,
     "frontal_area_m2": 9.0,
@@ -87,30 +103,45 @@
     "maximum_cycle_acceleration_m_s2": 0.3,
     "maximum_cycle_deceleration_m_s2": 0.6,
     "speed_tracking_gain_per_s": 0.45,
-    "low_speed_cutoff_m_s": 0.25
+    "low_speed_cutoff_m_s": 0.25,
+    "assumed_soh_loss_pct_per_efc": 0.01,
+    "assumed_reference_c_rate": 0.5,
+    "soh_fade_reward_weight": 25000.0
   },
-  "architecture": "P4 parallel hybrid: engine drives one axle mechanically; independent electric motor drives a second axle",
-  "reward_objective": "charge-sustaining fuel-equivalent consumption + battery throughput/degradation proxy + friction brake work + thermal violation + speed-tracking and unmet-traction penalties",
+  "architecture": "P4 parallel hybrid: rear axle driven by the independent electric motor; engine drives the other/front axle (front location remains an explicit assumption)",
+  "reward_objective": "charge-sustaining fuel-equivalent consumption + throughput cost + illustrative EFC-based SoH-fade cost with SoC/temperature/C-rate stress + friction brake work + thermal violation + speed-tracking and unmet-traction penalties",
+  "health_proxy": "equivalent full cycles = total charge-plus-discharge energy throughput / (2 * nominal capacity); assumed SoH loss 0.01 percentage points per EFC before stress multipliers; temperature Q10=2 and stress thresholds are illustrative; no calendar aging or chemistry-specific electrochemical model",
+  "scientific_basis": [
+    "Wang et al. (2018), Predictive energy management for hybrid electric vehicles considering extension of the battery life, Proc IMechE Part D 232(4), 499-510, doi:10.1177/0954407017703229",
+    "Wu et al. (2021), Battery Thermal- and Health-Constrained Energy Management for Hybrid Electric Bus Based on Soft Actor-Critic DRL Algorithm, IEEE TII 17(6), 3751-3761, doi:10.1109/TII.2020.3014599",
+    "Schmalstieg et al. (2014), A holistic aging model for Li(NiMnCo)O2 based 18650 lithium-ion batteries, Journal of Power Sources 257, 325-334, doi:10.1016/j.jpowsour.2014.02.012"
+  ],
   "model_scope": "longitudinal force model with assumed generic heavy-truck properties; not calibrated to a specific Sisu model or validated for real-time vehicle control",
   "validation_rollout": {
     "scenario": "mixed_route",
     "policy": "trained_q_learning",
     "seed": 4101,
-    "distance_km": 1.3439092953514271,
-    "mean_speed_tracking_error_kph": 7.89008091777507,
-    "friction_brake_energy_kwh": 0.24455664135417468,
-    "unmet_traction_energy_kwh": 0.0493079140016919,
-    "fuel_l": 0.84051010521553,
-    "fuel_l_per_100km": 62.54217513956103,
-    "charge_sustaining_equivalent_fuel_l": 1.2838946349492482,
-    "charge_sustaining_equivalent_l_per_100km": 95.53432209973029,
+    "distance_km": 1.3386530440548121,
+    "mean_speed_tracking_error_kph": 8.040049882913259,
+    "friction_brake_energy_kwh": 0.18795378518359818,
+    "unmet_traction_energy_kwh": 0.09780981859316216,
+    "fuel_l": 1.060073291169992,
+    "fuel_l_per_100km": 79.18954772321023,
+    "charge_sustaining_equivalent_fuel_l": 1.3151473607416786,
+    "charge_sustaining_equivalent_l_per_100km": 98.24407949337386,
     "initial_soc_pct": 60.0,
-    "final_soc_pct": 58.63807051950126,
-    "soc_change_pct": -1.3619294804987376,
-    "battery_discharge_kwh": 1.9831657656287842,
-    "regen_recovered_kwh": 0.3488503890302848,
-    "battery_degradation_proxy": 2.3320161546590687e-05,
-    "final_battery_temp_c": 23.021033367684684,
-    "episode_return": -170.700046590569
+    "final_soc_pct": 59.216497482965636,
+    "soc_change_pct": -0.7835025170343641,
+    "battery_discharge_kwh": 1.3223287368027286,
+    "battery_throughput_kwh": 1.7044544531642591,
+    "equivalent_full_cycles": 0.00710189355485108,
+    "initial_soh_pct": 96.0,
+    "final_soh_pct": 95.99990999982597,
+    "soh_loss_percentage_points": 9.000017402627236e-05,
+    "cycle_aging_proxy": 9.00001740765703e-05,
+    "regen_recovered_kwh": 0.38212571636153037,
+    "battery_degradation_proxy": 9.00001740765703e-05,
+    "final_battery_temp_c": 23.020071521337826,
+    "episode_return": -184.91662638478982
   }
 }

@@ -1,5 +1,5 @@
 function run_trained_ems()
-% Run the saved Python Q-learning EMS on the assumed two-axle P4 plant.
+% Run saved controller artifacts on the assumed P4 truck (rear e-axle).
 % This invokes the repository's Python model; it is not Simulink HIL.
 
 repoRoot = fileparts(fileparts(mfilename('fullpath')));
@@ -40,8 +40,8 @@ end
 
 T = readtable(trajectoryPath);
 figure('Name', 'Trained hybrid-truck EMS rollout', 'Color', 'w');
-layout = tiledlayout(4, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
-title(layout, 'Q-learning EMS — Python plant rollout viewed in MATLAB');
+layout = tiledlayout(5, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+title(layout, 'Rear-e-axle P4 EMS — Python plant rollout viewed in MATLAB');
 
 nexttile;
 plot(T.time_s, T.target_speed_kph, '--', 'LineWidth', 1.1); hold on;
@@ -61,6 +61,11 @@ plot(T.time_s, T.soc_pct, 'LineWidth', 1.3); ylabel('Battery SoC (%)');
 yyaxis right;
 plot(T.time_s, T.battery_temp_c, '--', 'LineWidth', 1.1); ylabel('Battery temp (°C)');
 grid on;
+
+nexttile;
+plot(T.time_s, T.soh_pct, 'LineWidth', 1.2); hold on;
+plot(T.time_s, T.equivalent_full_cycles, '--', 'LineWidth', 1.2);
+ylabel('Health proxy / EFC'); legend('SoH proxy (%)', 'EFC', 'Location', 'eastoutside'); grid on;
 
 nexttile;
 plot(T.time_s, T.cumulative_fuel_l, 'LineWidth', 1.3);

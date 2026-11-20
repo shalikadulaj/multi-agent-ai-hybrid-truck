@@ -1,5 +1,7 @@
 """Hybrid heavy-vehicle multi-agent energy management package."""
 
+from .rl_training import HealthAwareMPCPolicy, TabularQPolicy
+
 from .agents import (
     BatteryHealthAgent,
     DeepRLEMSPolicy,
@@ -33,12 +35,14 @@ __all__ = [
     "EnergyManagementPolicy",
     "GlobalState",
     "HeuristicPolicy",
+    "HealthAwareMPCPolicy",
     "HybridTruckSimulation",
     "MultiAgentSystem",
     "PerformanceMetrics",
     "ProjectSupervisorAgent",
     "RewardModel",
     "RewardSignal",
+    "TabularQPolicy",
     "benchmark_visualization_agent",
     "build_benchmark_scenarios",
     "build_realistic_drive_cycle",

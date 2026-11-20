@@ -6,6 +6,7 @@ from multi_agent_ai.rl_training import (
     N_ACTIONS,
     N_STATES,
     EpisodeState,
+    HealthAwareMPCPolicy,
     PlantConfig,
     TabularQPolicy,
     encode_observation,
@@ -18,9 +19,12 @@ from multi_agent_ai.rl_training import (
 
 
 def test_observation_encoder_and_action_table_have_valid_dimensions():
-    index = encode_observation(60.0, 100.0, 55.0, 1.5, 28.0, False)
+    index = encode_observation(60.0, 95.0, 100.0, 55.0, 1.5, 28.0, False)
     assert 0 <= index < N_STATES
     assert N_ACTIONS == 8
+    healthy_state = encode_observation(60.0, 99.0, 100.0, 55.0, 1.5, 28.0, False)
+    aged_state = encode_observation(60.0, 85.0, 100.0, 55.0, 1.5, 28.0, False)
+    assert healthy_state != aged_state
 
 
 def test_cycle_generation_is_reproducible_and_scenario_specific():
@@ -56,6 +60,29 @@ def test_transition_does_not_reset_randomized_initial_soh():
     state = EpisodeState(soc_pct=60.0, battery_temp_c=25.0, soh_pct=88.0, degradation_proxy=0.0)
     transition(state, point, action=0, config=PlantConfig())
     assert state.soh_pct <= 88.0
+
+
+def test_transition_reports_cycle_and_calendar_health_proxies():
+    state = EpisodeState(soc_pct=60.0, battery_temp_c=35.0, soh_pct=96.0, degradation_proxy=0.0)
+    point = make_drive_cycle("highway_cruise", np.random.default_rng(10), steps=1)[0]
+    _, metrics = transition(state, point, action=4, config=PlantConfig())
+    assert metrics["cycle_soh_loss_percentage_points"] >= 0.0
+    assert metrics["calendar_soh_loss_percentage_points"] > 0.0
+    assert state.calendar_aging_proxy > 0.0
+    assert state.peak_battery_temp_c >= state.battery_temp_c
+
+
+def test_health_aware_mpc_returns_a_valid_action_and_uses_rolling_preview():
+    cycle = make_drive_cycle("mixed_route", np.random.default_rng(18), steps=8)
+    state = EpisodeState(
+        soc_pct=60.0, battery_temp_c=25.0, soh_pct=94.0, degradation_proxy=0.0,
+        speed_kph=cycle[0].speed_kph,
+    )
+    controller = HealthAwareMPCPolicy(horizon_steps=3, beam_width=4)
+    action = controller.select_action(state, cycle, index=0, config=PlantConfig())
+    assert 0 <= action < N_ACTIONS
+    assert state.speed_kph == cycle[0].speed_kph
+    assert state.soh_pct == 94.0
 
 
 def test_electric_gear_selection_changes_motor_energy_use():
@@ -101,11 +128,13 @@ def test_regeneration_reduces_friction_brake_work_and_charges_battery():
     assert with_regen["regen_power_kw"] > no_regen["regen_power_kw"]
     assert with_regen["friction_brake_kwh"] < no_regen["friction_brake_kwh"]
     assert regen_state.soc_pct > no_regen_state.soc_pct
+    assert regen_state.battery_throughput_kwh > 0.0
 
 
 def test_q_learning_trains_and_policy_roundtrips(tmp_path: Path):
     policy, log = train_q_learning(episodes=12, seed=31, steps_per_episode=24)
     assert len(log) == 12
+    assert {row["algorithm"] for row in log} == {"double_q_learning"}
     assert np.any(policy.q_values != 0.0)
     target = tmp_path / "q_policy.csv"
     policy.save(target)
@@ -122,5 +151,7 @@ def test_evaluation_reports_charge_sustaining_metrics():
     assert len(trace) == 30
     assert "charge_sustaining_equivalent_l_per_100km" in metrics
     summary = evaluate_policies(policy, seeds=(1,), steps=20)
-    assert len(summary) == 4 * 3
-    assert {row["policy"] for row in summary} == {"engine_only_regen", "rule_based", "trained_q_learning"}
+    assert len(summary) == 4 * 5
+    assert {row["policy"] for row in summary} == {
+        "engine_only_regen", "rule_based", "trained_q_learning", "health_aware_mpc", "health_priority_mpc"
+    }
